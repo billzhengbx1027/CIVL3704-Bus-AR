@@ -1,38 +1,96 @@
 import time
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-BUSES_FILE = PROJECT_ROOT / "data" / "central_sydney_buses_matched.csv"
-TRIP_UPDATES_FILE = PROJECT_ROOT / "data" / "trip_updates_sample.csv"
-OUTPUT_FILE = PROJECT_ROOT / "data" / "central_sydney_buses_with_delay.csv"
+# =========================================================
+# 1. File paths
+# =========================================================
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+BUSES_FILE = (
+    PROJECT_ROOT
+    / "data"
+    / "central_sydney_buses_matched.csv"
+)
+
+TRIP_UPDATES_FILE = (
+    PROJECT_ROOT
+    / "data"
+    / "trip_updates_sample.csv"
+)
+
+# Latest snapshot: overwritten every cycle
+OUTPUT_FILE = (
+    PROJECT_ROOT
+    / "data"
+    / "central_sydney_buses_with_delay.csv"
+)
+
+# Historical snapshots: appended every cycle
+HISTORY_DIR = PROJECT_ROOT / "data" / "history"
+
+
+# =========================================================
+# 2. Delay classification
+# =========================================================
 
 def delay_status(delay_seconds):
-    """Temporary project categories for later visualisation."""
+    """
+    Temporary delay categories for visualisation.
+
+    Negative value = early
+    Positive value = late
+    """
 
     if pd.isna(delay_seconds):
         return "no_delay_data"
+
     if delay_seconds < -60:
         return "early"
+
     if delay_seconds <= 120:
         return "on_time"
+
     if delay_seconds <= 300:
         return "minor_delay"
+
     return "major_delay"
 
 
+# =========================================================
+# 3. Main processing
+# =========================================================
+
 def main():
+
+    # -----------------------------------------------------
+    # Load Central Sydney buses
+    # -----------------------------------------------------
+
     buses = pd.read_csv(
         BUSES_FILE,
         dtype={"trip_id": str},
     )
+
+    # -----------------------------------------------------
+    # Load Trip Updates
+    # -----------------------------------------------------
+
     updates = pd.read_csv(
         TRIP_UPDATES_FILE,
-        dtype={"trip_id": str, "stop_id": str},
+        dtype={
+            "trip_id": str,
+            "stop_id": str,
+        },
     )
+
+    # -----------------------------------------------------
+    # Convert required columns to numeric values
+    # -----------------------------------------------------
 
     numeric_columns = [
         "trip_update_timestamp",
@@ -46,32 +104,61 @@ def main():
 
     for column in numeric_columns:
         updates[column] = pd.to_numeric(
-            updates[column], errors="coerce"
+            updates[column],
+            errors="coerce",
         )
 
-    # Prefer predicted arrival time; use departure time when needed.
-    updates["predicted_event_time"] = updates["arrival_time"].fillna(
-        updates["departure_time"]
+    # -----------------------------------------------------
+    # Determine predicted event time
+    # -----------------------------------------------------
+
+    # Prefer arrival time.
+    # Use departure time if arrival time is unavailable.
+    updates["predicted_event_time"] = (
+        updates["arrival_time"].fillna(
+            updates["departure_time"]
+        )
     )
 
-    # Use each Trip Update's own timestamp so saved snapshots remain reproducible.
-    updates["reference_time"] = updates["trip_update_timestamp"].fillna(
-        int(time.time())
+    # Use the timestamp supplied with each Trip Update.
+    # If unavailable, use the current time.
+    updates["reference_time"] = (
+        updates["trip_update_timestamp"].fillna(
+            int(time.time())
+        )
     )
+
+    # -----------------------------------------------------
+    # Keep future stop updates
+    # -----------------------------------------------------
 
     upcoming = updates[
         updates["trip_id"].notna()
         & updates["predicted_event_time"].notna()
         & updates["delay_seconds"].notna()
-        & (updates["predicted_event_time"] >= updates["reference_time"])
+        & (
+            updates["predicted_event_time"]
+            >= updates["reference_time"]
+        )
     ].copy()
 
-    # The earliest future event is treated as the vehicle's next stop.
+    # -----------------------------------------------------
+    # Select the next stop for each trip
+    # -----------------------------------------------------
+
     next_stops = (
-        upcoming.sort_values(
-            ["trip_id", "predicted_event_time", "stop_sequence"]
+        upcoming
+        .sort_values(
+            [
+                "trip_id",
+                "predicted_event_time",
+                "stop_sequence",
+            ]
         )
-        .groupby("trip_id", as_index=False)
+        .groupby(
+            "trip_id",
+            as_index=False,
+        )
         .first()
     )
 
@@ -91,24 +178,132 @@ def main():
         }
     )
 
-    result = buses.merge(next_stops, on="trip_id", how="left")
-    result["delay_minutes"] = result["delay_seconds"] / 60
-    result["delay_status"] = result["delay_seconds"].apply(delay_status)
+    # -----------------------------------------------------
+    # Match delay data to individual buses
+    # -----------------------------------------------------
 
-    result.to_csv(OUTPUT_FILE, index=False)
+    result = buses.merge(
+        next_stops,
+        on="trip_id",
+        how="left",
+    )
 
-    buses_with_delay = int(result["delay_seconds"].notna().sum())
-    coverage = buses_with_delay / len(result) * 100 if len(result) else 0
+    result["delay_minutes"] = (
+        result["delay_seconds"] / 60
+    )
+
+    result["delay_status"] = (
+        result["delay_seconds"].apply(
+            delay_status
+        )
+    )
+
+    # -----------------------------------------------------
+    # Add snapshot timestamp
+    # -----------------------------------------------------
+
+    snapshot_time = datetime.now().astimezone()
+
+    result.insert(
+        0,
+        "snapshot_time",
+        snapshot_time.isoformat(
+            timespec="seconds"
+        ),
+    )
+
+    # -----------------------------------------------------
+    # Save latest snapshot
+    # -----------------------------------------------------
+
+    # This file is overwritten each cycle.
+    # The visualisation can always read the latest state.
+    result.to_csv(
+        OUTPUT_FILE,
+        index=False,
+    )
+
+    # -----------------------------------------------------
+    # Append historical data
+    # -----------------------------------------------------
+
+    HISTORY_DIR.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    history_file = HISTORY_DIR / (
+        f"bus_delay_history_"
+        f"{snapshot_time:%Y-%m-%d}.csv"
+    )
+
+    # Include column names only when creating a new file.
+    write_header = not history_file.exists()
+
+    result.to_csv(
+        history_file,
+        mode="a",
+        header=write_header,
+        index=False,
+    )
+
+    # -----------------------------------------------------
+    # Calculate coverage
+    # -----------------------------------------------------
+
+    buses_with_delay = int(
+        result["delay_seconds"].notna().sum()
+    )
+
+    if len(result) > 0:
+        coverage = (
+            buses_with_delay
+            / len(result)
+            * 100
+        )
+    else:
+        coverage = 0
+
+    # -----------------------------------------------------
+    # Display summary
+    # -----------------------------------------------------
 
     print("\n========================================")
     print("CENTRAL SYDNEY DELAY RESULT")
     print("========================================")
-    print("Central Sydney buses:", len(result))
-    print("Buses with delay data:", buses_with_delay)
-    print(f"Delay coverage: {coverage:.1f}%")
+
+    print(
+        "Snapshot time:",
+        snapshot_time.isoformat(
+            timespec="seconds"
+        ),
+    )
+
+    print(
+        "Central Sydney buses:",
+        len(result),
+    )
+
+    print(
+        "Buses with delay data:",
+        buses_with_delay,
+    )
+
+    print(
+        f"Delay coverage: {coverage:.1f}%"
+    )
 
     print("\nDelay status counts:")
-    print(result["delay_status"].value_counts().to_string())
+
+    print(
+        result["delay_status"]
+        .value_counts()
+        .to_string()
+    )
+
+    # -----------------------------------------------------
+    # Display sample buses
+    # -----------------------------------------------------
 
     display_columns = [
         "vehicle_id",
@@ -121,13 +316,29 @@ def main():
     ]
 
     print("\nSample buses with delay:")
+
     print(
-        result[result["delay_seconds"].notna()][display_columns]
+        result[
+            result["delay_seconds"].notna()
+        ][display_columns]
         .head(10)
         .to_string(index=False)
     )
-    print("\nSaved to:", OUTPUT_FILE)
 
+    print(
+        "\nLatest snapshot saved to:",
+        OUTPUT_FILE,
+    )
+
+    print(
+        "History appended to:",
+        history_file,
+    )
+
+
+# =========================================================
+# 4. Run script
+# =========================================================
 
 if __name__ == "__main__":
     main()
