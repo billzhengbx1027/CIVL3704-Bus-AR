@@ -11,7 +11,7 @@ from gtfs_trip_updates import fetch_trip_updates
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 STATIC_SCRIPT = PROJECT_ROOT / "src" / "gtfs_static.py"
-POLL_INTERVAL_SECONDS = 60
+POLL_INTERVAL_SECONDS = 30
 
 
 def run_static_matching():

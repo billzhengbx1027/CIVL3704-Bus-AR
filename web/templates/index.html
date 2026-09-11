@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Central Sydney Bus Delays</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main id="map" aria-label="Central Sydney bus delay map"></main>
+
+  <section id="panel" class="panel">
+    <h1>Central Sydney Buses</h1>
+    <p id="status">Loading latest snapshot…</p>
+    <div class="legend">
+      <span><i class="dot early"></i>Early</span>
+      <span><i class="dot on_time"></i>On time</span>
+      <span><i class="dot minor_delay"></i>Minor delay</span>
+      <span><i class="dot major_delay"></i>Major delay</span>
+      <span><i class="dot no_delay_data"></i>No delay data</span>
+    </div>
+    <p class="keys">P projection mode · L labels · B basemap · F fullscreen · R refresh</p>
+  </section>
+
+  <div id="error" class="error" hidden></div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="/static/projection.js"></script>
+</body>
+</html>
