@@ -84,6 +84,19 @@ def fetch_realtime_buses():
                     else None
                 ),
                 "timestamp": vehicle.timestamp or None,
+                "current_stop_id": (
+                    vehicle.stop_id if vehicle.HasField("stop_id") else ""
+                ),
+                "current_stop_sequence": (
+                    vehicle.current_stop_sequence
+                    if vehicle.HasField("current_stop_sequence") else None
+                ),
+                "stop_status": (
+                    gtfs_realtime_pb2.VehiclePosition.VehicleStopStatus.Name(
+                        vehicle.current_status
+                    )
+                    if vehicle.HasField("current_status") else ""
+                ),
             }
         )
 
@@ -94,6 +107,9 @@ def fetch_realtime_buses():
         "latitude",
         "longitude",
         "timestamp",
+        "current_stop_id",
+        "current_stop_sequence",
+        "stop_status",
     ]
     df = pd.DataFrame(records, columns=columns)
 

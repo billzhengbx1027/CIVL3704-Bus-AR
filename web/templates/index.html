@@ -3,29 +3,81 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Central Sydney Bus Delays</title>
+  <title>Central Sydney Bus Map</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <main id="map" aria-label="Central Sydney bus delay map"></main>
+  <main id="map" aria-label="Central Sydney live bus map"></main>
 
-  <section id="panel" class="panel">
-    <h1>Central Sydney Buses</h1>
-    <p id="status">Loading latest snapshot…</p>
-    <div class="legend">
-      <span><i class="dot early"></i>Early</span>
-      <span><i class="dot on_time"></i>On time</span>
-      <span><i class="dot minor_delay"></i>Minor delay</span>
-      <span><i class="dot major_delay"></i>Major delay</span>
-      <span><i class="dot no_delay_data"></i>No delay data</span>
+  <section id="panel" class="panel" aria-label="Map controls">
+    <header class="panel-header">
+      <div>
+        <p class="eyebrow">CIVL3704 · Central Sydney</p>
+        <h1>Bus map</h1>
+      </div>
+      <span class="live-badge">LIVE DATA</span>
+    </header>
+    <p id="status" class="status" aria-live="polite">Loading latest snapshot…</p>
+
+    <div class="filter-grid">
+      <label>Route
+        <select id="route-filter"><option value="">All routes</option></select>
+      </label>
+      <label>Next stop
+        <select id="stop-filter"><option value="">All next stops</option></select>
+      </label>
     </div>
-    <p class="keys">P projection mode · L labels · B basemap · F fullscreen · R refresh</p>
+
+    <div class="map-options">
+      <label><input id="show-route" type="checkbox" checked> Selected route path</label>
+      <label><input id="show-stops" type="checkbox"> Next stops</label>
+    </div>
+    <p id="shape-status" class="small-note">Choose a route to see one scheduled trip path.</p>
+
+    <div class="section-heading">
+      <h2>Delay display</h2>
+      <label class="mode-label">Mode
+        <select id="mode-select">
+          <option value="reference">TfNSW time window</option>
+          <option value="custom">My settings</option>
+        </select>
+      </label>
+    </div>
+    <p id="mode-note" class="small-note"></p>
+    <div id="custom-settings" class="custom-settings" hidden>
+      <div class="filter-grid">
+        <label>Early from (min)
+          <input id="early-minutes" type="number" min="0.5" max="60" step="0.5" value="1">
+        </label>
+        <label>Late from (min)
+          <input id="late-minutes" type="number" min="0.5" max="120" step="0.5" value="3">
+        </label>
+      </div>
+      <div class="colour-grid">
+        <label>Early <input id="colour-early" type="color" value="#4da3ff"></label>
+        <label>On time <input id="colour-on-time" type="color" value="#39d98a"></label>
+        <label>Late <input id="colour-late" type="color" value="#ff4d4f"></label>
+        <label>No data <input id="colour-no-data" type="color" value="#a7adb4"></label>
+      </div>
+      <button id="reset-settings" type="button">Reset my settings</button>
+    </div>
+
+    <div id="legend" class="legend" aria-label="Map legend">
+      <span><i class="dot" data-status="early"></i>Early</span>
+      <span><i class="dot" data-status="on_time"></i>On time</span>
+      <span><i class="dot" data-status="late"></i>Late</span>
+      <span><i class="dot" data-status="no_delay_data"></i>No delay data</span>
+      <span><i class="dot stale-dot"></i>Old position</span>
+    </div>
+    <p class="small-note data-note">Colours are chosen by this project. Next-stop delays are predictions, not an official performance result. Proximity to a stop does not confirm a stop was served.</p>
+    <p class="keys">P projection · L route labels · B basemap · F fullscreen · R refresh</p>
   </section>
 
-  <div id="error" class="error" hidden></div>
+  <div id="error" class="error" role="alert" hidden></div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="/static/delay_rules.js"></script>
   <script src="/static/projection.js"></script>
 </body>
 </html>

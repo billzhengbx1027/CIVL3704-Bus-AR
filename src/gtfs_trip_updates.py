@@ -75,10 +75,17 @@ def fetch_trip_updates():
                 stop_update, "departure", "time"
             )
 
-            if arrival_delay is not None:
-                delay_seconds = arrival_delay
-            else:
+            # The Greater Sydney contract judges the first and middle stops
+            # by departure time. Use departure prediction where available.
+            if departure_delay is not None:
                 delay_seconds = departure_delay
+                delay_event_type = "departure"
+            elif arrival_delay is not None:
+                delay_seconds = arrival_delay
+                delay_event_type = "arrival"
+            else:
+                delay_seconds = None
+                delay_event_type = None
 
             records.append(
                 {
@@ -105,6 +112,7 @@ def fetch_trip_updates():
                     "arrival_time": arrival_time,
                     "departure_time": departure_time,
                     "delay_seconds": delay_seconds,
+                    "delay_event_type": delay_event_type,
                 }
             )
 

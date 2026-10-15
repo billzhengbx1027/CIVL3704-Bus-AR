@@ -198,12 +198,19 @@ output_columns = [
     "latitude",
     "longitude",
     "timestamp",
+    "current_stop_id",
+    "current_stop_sequence",
+    "stop_status",
     "update_age_seconds",
     "stale",
     "missing_essential_data",
     "invalid_coordinates",
     "valid"
 ]
+
+for optional_column in ("current_stop_id", "current_stop_sequence", "stop_status"):
+    if optional_column not in matched.columns:
+        matched[optional_column] = None
 
 matched[output_columns].to_csv(
     "data/central_sydney_buses_matched.csv",

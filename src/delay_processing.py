@@ -112,20 +112,21 @@ def main():
     # Determine predicted event time
     # -----------------------------------------------------
 
-    # Prefer arrival time.
-    # Use departure time if arrival time is unavailable.
+    if "delay_event_type" not in updates.columns:
+        updates["delay_event_type"] = "arrival"
     updates["predicted_event_time"] = (
-        updates["arrival_time"].fillna(
-            updates["departure_time"]
-        )
+        updates["departure_time"]
+        .where(updates["delay_event_type"] == "departure", updates["arrival_time"])
+        .fillna(updates["arrival_time"])
+        .fillna(updates["departure_time"])
     )
 
-    # Use the timestamp supplied with each Trip Update.
-    # If unavailable, use the current time.
+    # A predicted stop that has already passed is not an upcoming stop,
+    # even when the trip update itself is old.
     updates["reference_time"] = (
         updates["trip_update_timestamp"].fillna(
             int(time.time())
-        )
+        ).clip(lower=int(time.time()))
     )
 
     # -----------------------------------------------------
@@ -169,6 +170,7 @@ def main():
             "stop_sequence",
             "predicted_event_time",
             "delay_seconds",
+            "delay_event_type",
             "trip_update_timestamp",
         ]
     ].rename(

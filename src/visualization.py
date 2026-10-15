@@ -6,13 +6,15 @@ import argparse
 import json
 import math
 import threading
+import time
 import webbrowser
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import pandas as pd
+from map_data import route_shape_for_trip, stop_lookup
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -51,7 +53,13 @@ def load_bus_snapshot(data_file: Path) -> dict:
 
     frame = pd.read_csv(
         data_file,
-        dtype={"vehicle_id": str, "trip_id": str, "route_short_name": str},
+        dtype={
+            "vehicle_id": str,
+            "trip_id": str,
+            "route_short_name": str,
+            "next_stop_id": str,
+            "current_stop_id": str,
+        },
     )
     required = {"latitude", "longitude"}
     missing = required.difference(frame.columns)
@@ -69,19 +77,34 @@ def load_bus_snapshot(data_file: Path) -> dict:
     if "valid" in frame.columns:
         frame = frame[frame["valid"].map(_truthy)]
 
+    stops = stop_lookup()
     buses = []
+    visible_stops = {}
     for _, row in frame.iterrows():
+        next_stop_id = _clean(row.get("next_stop_id"))
+        current_stop_id = _clean(row.get("current_stop_id"))
+        next_stop = stops.get(next_stop_id) if next_stop_id else None
+        current_stop = stops.get(current_stop_id) if current_stop_id else None
+        if next_stop:
+            visible_stops[next_stop_id] = next_stop
         buses.append(
             {
                 "vehicle_id": _clean(row.get("vehicle_id")),
                 "trip_id": _clean(row.get("trip_id")),
                 "route": _clean(row.get("route_short_name")) or "?",
+                "route_long_name": _clean(row.get("route_long_name")),
+                "headsign": _clean(row.get("trip_headsign")),
                 "latitude": float(row["latitude"]),
                 "longitude": float(row["longitude"]),
                 "delay_seconds": _clean(row.get("delay_seconds")),
+                "delay_event_type": _clean(row.get("delay_event_type")),
                 "delay_minutes": _clean(row.get("delay_minutes")),
                 "delay_status": _clean(row.get("delay_status")) or "no_delay_data",
-                "next_stop_id": _clean(row.get("next_stop_id")),
+                "next_stop_id": next_stop_id,
+                "next_stop": next_stop,
+                "current_stop_id": current_stop_id,
+                "current_stop_name": current_stop["name"] if current_stop else None,
+                "stop_status": _clean(row.get("stop_status")),
                 "timestamp": _clean(row.get("timestamp")),
             }
         )
@@ -98,6 +121,7 @@ def load_bus_snapshot(data_file: Path) -> dict:
         "snapshot_time": snapshot_time,
         "count": len(buses),
         "buses": buses,
+        "stops": list(visible_stops.values()),
     }
 
 
@@ -123,10 +147,15 @@ def demo_snapshot() -> dict:
                 "latitude": lat,
                 "longitude": lon,
                 "delay_seconds": delay,
+                "delay_event_type": "departure",
                 "delay_minutes": None if delay is None else round(delay / 60, 1),
                 "delay_status": status,
                 "next_stop_id": None,
-                "timestamp": None,
+                "next_stop": None,
+                "current_stop_id": None,
+                "current_stop_name": None,
+                "stop_status": None,
+                "timestamp": int(time.time()),
             }
         )
     return {
@@ -134,6 +163,7 @@ def demo_snapshot() -> dict:
         "snapshot_time": datetime.now().astimezone().isoformat(timespec="seconds"),
         "count": len(buses),
         "buses": buses,
+        "stops": [],
     }
 
 
@@ -175,6 +205,12 @@ def make_handler(data_file: Path = LATEST_DATA_FILE, demo: bool = False):
                     "text/javascript; charset=utf-8",
                 )
                 return
+            if path == "/static/delay_rules.js":
+                self._send_bytes(
+                    (WEB_ROOT / "static" / "delay_rules.js").read_bytes(),
+                    "text/javascript; charset=utf-8",
+                )
+                return
             if path == "/health":
                 self._send_json({"status": "ok"})
                 return
@@ -193,6 +229,22 @@ def make_handler(data_file: Path = LATEST_DATA_FILE, demo: bool = False):
                         },
                         503,
                     )
+                return
+
+            if path == "/api/route-shape":
+                trip_id = parse_qs(urlparse(self.path).query).get("trip_id", [""])[0]
+                if not trip_id:
+                    self._send_json({"error": "trip_id is required"}, 400)
+                    return
+                try:
+                    shape = route_shape_for_trip(trip_id)
+                except (OSError, ValueError) as error:
+                    self._send_json({"error": str(error)}, 503)
+                    return
+                if shape is None:
+                    self._send_json({"error": "Route shape unavailable"}, 404)
+                else:
+                    self._send_json(shape)
                 return
 
             self._send_json({"error": "Not found"}, 404)
