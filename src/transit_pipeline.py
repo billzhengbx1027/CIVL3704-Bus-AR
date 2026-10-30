@@ -8,6 +8,7 @@ import os
 import time
 from datetime import datetime, time as clock_time, timedelta
 from pathlib import Path
+from time import sleep as _sleep
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -45,6 +46,18 @@ UPDATE_COLUMNS = (
 )
 
 
+def _replace(temporary: Path, path: Path, attempts: int = 10) -> None:
+    """Windows refuses to replace a file another program is reading (WinError 32); retry briefly."""
+    for attempt in range(attempts):
+        try:
+            os.replace(temporary, path)
+            return
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            _sleep(0.3)
+
+
 def _write_csv(path: Path, columns: tuple[str, ...], records: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
@@ -52,7 +65,7 @@ def _write_csv(path: Path, columns: tuple[str, ...], records: list[dict]) -> Non
         writer = csv.DictWriter(output, fieldnames=columns, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(records)
-    os.replace(temporary, path)
+    _replace(temporary, path)
 
 
 def _feed(url: str, api_key: str) -> gtfs_realtime_pb2.FeedMessage:
@@ -158,20 +171,38 @@ def _cached_positions(now: int, feed_name: str) -> list[dict]:
     return records
 
 
-def fetch_all(api_key: str | None = None) -> dict:
-    """Poll each source independently; report unavailable feeds without hiding others."""
+def _previous_status() -> dict:
+    try:
+        return json.loads(FEED_STATUS_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def fetch_all(api_key: str | None = None, *, include_updates: bool = True) -> dict:
+    """Poll each source independently; report unavailable feeds without hiding others.
+
+    With include_updates=False only Vehicle Positions are fetched and the previous
+    Trip Updates file is kept, which saves half the API requests on quick cycles.
+    """
     if api_key is None:
         load_dotenv(ROOT / ".env")
         api_key = os.getenv("TFNSW_API_KEY")
     if not api_key:
         raise RuntimeError("TFNSW_API_KEY was not found in .env")
+    if not include_updates and not UPDATES_FILE.exists():
+        include_updates = True
+    previous = {} if include_updates else _previous_status()
     positions, updates, status = [], [], {}
     for source in FEEDS:
         state = {"mode": source.mode, "positions": "unavailable", "updates": "unavailable"}
-        for kind, url, parser, target in (
-            ("positions", source.vehicle_url, parse_positions, positions),
-            ("updates", source.updates_url, parse_updates, updates),
-        ):
+        if not include_updates:
+            for key in ("updates", "updates_count"):
+                if key in previous.get(source.name, {}):
+                    state[key] = previous[source.name][key]
+        kinds = [("positions", source.vehicle_url, parse_positions, positions)]
+        if include_updates:
+            kinds.append(("updates", source.updates_url, parse_updates, updates))
+        for kind, url, parser, target in kinds:
             try:
                 feed = _feed(url, api_key)
                 received_at = int(time.time())
@@ -196,11 +227,15 @@ def fetch_all(api_key: str | None = None) -> dict:
     if not any(state["positions"] == "ok" for state in status.values()):
         raise RuntimeError("All Vehicle Positions feeds failed; previous snapshot was kept")
     _write_csv(POSITIONS_FILE, POSITION_COLUMNS, positions)
-    _write_csv(UPDATES_FILE, UPDATE_COLUMNS, updates)
     status["fetched_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+    if include_updates:
+        _write_csv(UPDATES_FILE, UPDATE_COLUMNS, updates)
+        status["updates_fetched_at"] = status["fetched_at"]
+    elif "updates_fetched_at" in previous:
+        status["updates_fetched_at"] = previous["updates_fetched_at"]
     temporary = FEED_STATUS_FILE.with_suffix(".tmp")
     temporary.write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(temporary, FEED_STATUS_FILE)
+    _replace(temporary, FEED_STATUS_FILE)
     return status
 
 
@@ -231,18 +266,52 @@ def scheduled_prediction(schedule_time: str, delay_seconds: float, now: int,
     return min(candidates) if candidates else None
 
 
+_stop_time_indexes: dict[Path, tuple[tuple, list[str], dict[str, list[tuple[int, int]]]]] = {}
+
+
+def _stop_time_spans(stop_times: Path) -> tuple[list[str], dict[str, list[tuple[int, int]]]]:
+    """Index each trip's byte ranges once, so later cycles skip the full 100+ MB scan."""
+    stat = stop_times.stat()
+    signature = (stat.st_size, stat.st_mtime_ns)
+    cached = _stop_time_indexes.get(stop_times)
+    if cached and cached[0] == signature:
+        return cached[1], cached[2]
+    spans: dict[str, list[tuple[int, int]]] = {}
+    with stop_times.open("rb") as source:
+        header = next(csv.reader([source.readline().decode("utf-8-sig")]))
+        column = header.index("trip_id")
+        previous, start = None, source.tell()
+        while True:
+            offset = source.tell()
+            line = source.readline()
+            parts = line.split(b",")
+            trip_id = (parts[column].strip().strip(b'"').decode("utf-8")
+                       if len(parts) > column else previous) if line else None
+            if trip_id != previous:
+                if previous is not None:
+                    spans.setdefault(previous, []).append((start, offset))
+                previous, start = trip_id, offset
+            if not line:
+                break
+    _stop_time_indexes[stop_times] = (signature, header, spans)
+    return header, spans
+
+
 def _rail_stop_times(root: Path, trip_ids: set[str]) -> tuple[dict, dict]:
     by_stop, by_sequence = {}, {}
-    if not trip_ids or not (root / "stop_times.txt").exists():
+    stop_times = root / "stop_times.txt"
+    if not trip_ids or not stop_times.exists():
         return by_stop, by_sequence
-    with (root / "stop_times.txt").open(encoding="utf-8-sig", newline="") as source:
-        for row in csv.DictReader(source):
-            trip_id = row.get("trip_id", "")
-            if trip_id not in trip_ids:
-                continue
-            times = (row.get("arrival_time", ""), row.get("departure_time", ""))
-            by_stop[(trip_id, row.get("stop_id", ""))] = times
-            by_sequence[(trip_id, row.get("stop_sequence", ""))] = times
+    header, spans = _stop_time_spans(stop_times)
+    with stop_times.open("rb") as source:
+        for trip_id in trip_ids:
+            for start, end in spans.get(trip_id, ()):
+                source.seek(start)
+                for values in csv.reader(source.read(end - start).decode("utf-8").splitlines()):
+                    row = dict(zip(header, values))
+                    times = (row.get("arrival_time", ""), row.get("departure_time", ""))
+                    by_stop[(trip_id, row.get("stop_id", ""))] = times
+                    by_sequence[(trip_id, row.get("stop_sequence", ""))] = times
     return by_stop, by_sequence
 
 
@@ -271,10 +340,19 @@ def _fill_rail_predictions(updates: pd.DataFrame, vehicles: pd.DataFrame,
             updates.at[index, event] = predicted
 
 
-def build_snapshot(*, now: int | None = None) -> pd.DataFrame:
-    """Join by trip_id and mode; complete GTFS route_id differs from realtime IDs."""
-    now = int(time.time()) if now is None else now
-    vehicles = pd.read_csv(POSITIONS_FILE, dtype=str, keep_default_na=False)
+_trip_routes_cache: tuple[tuple, pd.DataFrame] | None = None
+
+
+def _trip_routes() -> pd.DataFrame:
+    """Static trip -> route join, rebuilt only when a GTFS file changes."""
+    global _trip_routes_cache
+    signature = tuple(
+        (str(path), path.stat().st_size, path.stat().st_mtime_ns) if path.exists() else str(path)
+        for root in (STATIC, TRAIN_STATIC, METRO_STATIC)
+        for path in (root / "routes.txt", root / "trips.txt")
+    )
+    if _trip_routes_cache and _trip_routes_cache[0] == signature:
+        return _trip_routes_cache[1]
     routes = pd.read_csv(STATIC / "routes.txt", dtype=str, keep_default_na=False)
     trips = pd.read_csv(STATIC / "trips.txt", dtype=str, keep_default_na=False)
     routes["mode"] = routes["route_type"].map(mode_for_route_type)
@@ -292,7 +370,20 @@ def build_snapshot(*, now: int | None = None) -> pd.DataFrame:
         routes[["route_id", "route_short_name", "route_long_name", "mode"]],
         on="route_id", how="inner",
     ).drop_duplicates(["mode", "trip_id"])
-    result = vehicles.merge(trip_routes, on=["mode", "trip_id"], how="left")
+    _trip_routes_cache = (signature, trip_routes)
+    return trip_routes
+
+
+def build_snapshot(*, now: int | None = None, updates_received_at: int | None = None) -> pd.DataFrame:
+    """Join by trip_id and mode; complete GTFS route_id differs from realtime IDs.
+
+    updates_received_at is when the Trip Updates file was fetched; freshness is
+    judged at that time, since quick cycles reuse updates for up to a minute.
+    """
+    now = int(time.time()) if now is None else now
+    updates_at = now if updates_received_at is None else min(now, updates_received_at)
+    vehicles = pd.read_csv(POSITIONS_FILE, dtype=str, keep_default_na=False)
+    result = vehicles.merge(_trip_routes(), on=["mode", "trip_id"], how="left")
 
     updates = pd.read_csv(UPDATES_FILE, dtype=str, keep_default_na=False)
     for column in ("trip_update_timestamp", "arrival_time", "departure_time", "delay_seconds", "stop_sequence"):
@@ -301,12 +392,12 @@ def build_snapshot(*, now: int | None = None) -> pd.DataFrame:
         _fill_rail_predictions(updates, vehicles, now, mode, root)
     temporary_updates = ENRICHED_UPDATES_FILE.with_suffix(".tmp")
     updates.to_csv(temporary_updates, index=False)
-    os.replace(temporary_updates, ENRICHED_UPDATES_FILE)
+    _replace(temporary_updates, ENRICHED_UPDATES_FILE)
     updates["predicted_event_time"] = updates["departure_time"].fillna(updates["arrival_time"])
     upcoming = updates[
         updates["trip_id"].ne("")
         & updates["predicted_event_time"].between(now - 60, now + 3600)
-        & updates["trip_update_timestamp"].between(now - FRESH_SECONDS, now + 30)
+        & updates["trip_update_timestamp"].between(updates_at - FRESH_SECONDS, updates_at + 30)
     ].copy()
     upcoming = upcoming.sort_values(["mode", "trip_id", "predicted_event_time", "stop_sequence"])
     next_stops = upcoming.drop_duplicates(["mode", "trip_id"])[[
@@ -318,7 +409,7 @@ def build_snapshot(*, now: int | None = None) -> pd.DataFrame:
     result["snapshot_time"] = datetime.now().astimezone().isoformat(timespec="seconds")
     temporary = SNAPSHOT_FILE.with_suffix(".tmp")
     result.to_csv(temporary, index=False)
-    os.replace(temporary, SNAPSHOT_FILE)
+    _replace(temporary, SNAPSHOT_FILE)
     matched = (result.assign(matched=result["route_short_name"].fillna("").ne(""))
                .groupby("mode")["matched"].sum().to_dict()) if not result.empty else {}
     print(f"Saved {len(result)} vehicles to {SNAPSHOT_FILE}; matched by mode: {matched}")

@@ -24,7 +24,7 @@ python src/visualization.py
 
 `data/static/` 放 [TfNSW Timetables Complete GTFS](https://opendata.transport.nsw.gov.au/dataset/timetables-complete-gtfs) 解压后的文件，供公交、轻轨静态线路和站点使用。流水线首次运行时会从 TfNSW 下载 Sydney Trains 专用时刻表到 `data/static_train/`，Metro 专用时刻表到 `data/static_metro/`，以后每 24 小时尝试更新。独立包的 `trip_id` 用于匹配相应的实时数据；完整包的铁路班次 ID 在实测中无法匹配。若自动下载失败，可分别运行 `python src/train_static.py` 或 `python src/train_static.py --metro`，并检查 API Key 是否获得 [Timetables for Realtime](https://opendata.transport.nsw.gov.au/data/dataset/public-transport-timetables-realtime) 及 [v2](https://opendata.transport.nsw.gov.au/data/dataset/public-transport-timetables-realtime-v2) 权限。
 
-流水线读取公交、Sydney Trains、Sydney Metro、L1 Inner West、L2/L3 CBD and South East、Parramatta Light Rail 的 Vehicle Positions 与 Trip Updates。地图范围由 `map_area.json` 决定（见下文“地图范围与投影校准”），Parramatta L4 不在该范围内。部分 feed 失败时其余 feed 继续更新，`data/feed_status.json` 和页面会标示失败来源。TfNSW 应用需要开通相应的 [实时位置](https://opendata.transport.nsw.gov.au/dataset/public-transport-realtime-vehicle-positions)、[v2 实时位置](https://opendata.transport.nsw.gov.au/dataset/public-transport-realtime-vehicle-positions-v2)、[Trip Updates](https://opendata.transport.nsw.gov.au/dataset/public-transport-realtime-trip-update) 与 [v2 Trip Updates](https://opendata.transport.nsw.gov.au/dataset/public-transport-realtime-trip-update-v2) 数据集权限。
+流水线读取公交、Sydney Trains、Sydney Metro、L1 Inner West、L2/L3 CBD and South East、Parramatta Light Rail 的 Vehicle Positions 与 Trip Updates。地图范围由 `map_area.json` 决定（见下文“地图范围与投影校准”），Parramatta L4 不在该范围内。车辆位置每 15 秒更新一次，Trip Updates（到站预测，数据量大）每 60 秒更新一次，6 个 feed 合计每天约 43,000 次 API 请求；间隔可在 `src/pipeline.py` 顶部修改，缩短前请先确认 TfNSW API Key 的每日配额。部分 feed 失败时其余 feed 继续更新，`data/feed_status.json` 和页面会标示失败来源。TfNSW 应用需要开通相应的 [实时位置](https://opendata.transport.nsw.gov.au/dataset/public-transport-realtime-vehicle-positions)、[v2 实时位置](https://opendata.transport.nsw.gov.au/dataset/public-transport-realtime-vehicle-positions-v2)、[Trip Updates](https://opendata.transport.nsw.gov.au/dataset/public-transport-realtime-trip-update) 与 [v2 Trip Updates](https://opendata.transport.nsw.gov.au/dataset/public-transport-realtime-trip-update-v2) 数据集权限。
 
 合并后的最新数据在 `data/central_sydney_vehicles_with_delay.csv`，网页使用 `/api/vehicles`。旧 `/api/buses` 仍返回公交车辆。路线索引在 `data/journey_routes.sqlite`，轨迹索引在 `data/shape_offsets.json`、`data/train_shape_offsets.json` 和 `data/metro_shape_offsets.json`；静态文件更新后索引会重建。
 
@@ -46,7 +46,7 @@ python src/visualization.py
 
 `map_area.json` 保存地图的南、西、北、东边界，流水线、路线索引和网页共用这一份配置。当前值（纬度 -33.909 至 -33.814，经度 151.106 至 151.271）是根据悉尼港地形模型的照片估计的，大致覆盖 Drummoyne 到 Rose Bay、Lane Cove 到 Redfern。
 
-投影到实体模型上时：按 `F` 全屏，按 `P` 进入投影界面（视野锁定在 `map_area.json` 的范围，不能缩放拖动），再按 `C` 进入校准。可以拖动地图或用方向键移动（按住 Shift 加大步长），用滚轮或 `+`/`-` 缩放，`[`/`]` 微调；红色虚线是当前保存的范围。对齐后按 `Enter`，当前投影画面的范围会写入 `map_area.json`；按 `Esc` 取消。保存只接受本机（127.0.0.1）的请求。正在运行的 `python src/pipeline.py` 会在下一轮（约 60 秒内）按新范围采集车辆，无需重启；路线索引会在首次搜索时自动重建一次，需要几分钟。
+投影到实体模型上时：按 `F` 全屏，按 `P` 进入投影界面（视野锁定在 `map_area.json` 的范围，不能缩放拖动），再按 `C` 进入校准。可以拖动地图或用方向键移动（按住 Shift 加大步长），用滚轮或 `+`/`-` 缩放，`[`/`]` 微调；红色虚线是当前保存的范围。对齐后按 `Enter`，当前投影画面的范围会写入 `map_area.json`；按 `Esc` 取消。保存只接受本机（127.0.0.1）的请求。正在运行的 `python src/pipeline.py` 会在下一轮（约 15 秒内）按新范围采集车辆，无需重启；路线索引会在首次搜索时自动重建一次，需要几分钟。
 
 ## 延误与数据可信度
 

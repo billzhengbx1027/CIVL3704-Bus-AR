@@ -97,6 +97,63 @@ class TransitPipelineTests(unittest.TestCase):
                     transit_pipeline._fill_rail_predictions(updates, vehicles, now, mode, root)
                     self.assertEqual(updates.iloc[0]["departure_time"], now + 7 * 60)
 
+    def test_positions_only_cycle_keeps_previous_trip_updates(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1] / "data") as directory:
+            root = Path(directory)
+            positions = gtfs_realtime_pb2.FeedMessage()
+            positions.header.gtfs_realtime_version = "2.0"
+            vehicle = positions.entity.add().vehicle
+            vehicle.position.latitude = -33.88
+            vehicle.position.longitude = 151.20
+            vehicle.timestamp = 1000
+            updates = gtfs_realtime_pb2.FeedMessage()
+            updates.header.gtfs_realtime_version = "2.0"
+            requested = []
+
+            def feed(url, _api_key):
+                requested.append(url)
+                return positions if url == "positions" else updates
+
+            with patch.object(transit_pipeline, "FEEDS", (Feed("innerwest", "light_rail", "positions", "updates"),)), \
+                 patch.object(transit_pipeline, "_feed", side_effect=feed), \
+                 patch.object(transit_pipeline, "time", SimpleNamespace(time=lambda: 1000)), \
+                 patch.object(transit_pipeline, "POSITIONS_FILE", root / "positions.csv"), \
+                 patch.object(transit_pipeline, "UPDATES_FILE", root / "updates.csv"), \
+                 patch.object(transit_pipeline, "FEED_STATUS_FILE", root / "status.json"):
+                transit_pipeline.fetch_all(api_key="test")
+                (root / "updates.csv").write_text("kept", encoding="utf-8")
+                requested.clear()
+                status = transit_pipeline.fetch_all(api_key="test", include_updates=False)
+            self.assertEqual(requested, ["positions"])
+            self.assertEqual((root / "updates.csv").read_text(encoding="utf-8"), "kept")
+            self.assertEqual(status["innerwest"]["updates"], "ok")
+            self.assertIn("updates_fetched_at", status)
+
+    def test_indexed_stop_times_match_rows_split_across_the_file(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1] / "data") as directory:
+            root = Path(directory)
+            with (root / "stop_times.txt").open("w", encoding="utf-8", newline="") as output:
+                output.write("trip_id,arrival_time,departure_time,stop_id,stop_sequence\r\n")
+                output.write("a,10:00:00,10:01:00,s1,1\r\nb,11:00:00,11:00:00,s9,1\r\n")
+                output.write("a,10:05:00,10:06:00,s2,2\r\n")
+            by_stop, by_sequence = transit_pipeline._rail_stop_times(root, {"a"})
+            self.assertEqual(by_stop, {("a", "s1"): ("10:00:00", "10:01:00"),
+                                       ("a", "s2"): ("10:05:00", "10:06:00")})
+            self.assertEqual(by_sequence[("a", "2")], ("10:05:00", "10:06:00"))
+
+    def test_replace_retries_while_file_is_locked(self):
+        attempts = []
+
+        def locked_once(_source, _target):
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise PermissionError(32, "file in use")
+
+        with patch.object(transit_pipeline.os, "replace", side_effect=locked_once), \
+             patch.object(transit_pipeline, "_sleep"):
+            transit_pipeline._replace(Path("a.tmp"), Path("a.csv"))
+        self.assertEqual(len(attempts), 2)
+
     def test_missing_feed_reuses_only_recent_positions_as_stale(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1] / "data") as directory:
             positions = Path(directory) / "positions.csv"
