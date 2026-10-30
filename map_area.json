@@ -1,0 +1,8 @@
+{
+  "name": "Sydney Harbour physical model",
+  "note": "Estimated from a photo of the model; refine with calibration mode (P, then C) and save.",
+  "south": -33.909,
+  "west": 151.106,
+  "north": -33.814,
+  "east": 151.271
+}

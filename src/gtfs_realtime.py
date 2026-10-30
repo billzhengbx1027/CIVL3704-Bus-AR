@@ -9,6 +9,7 @@ import pandas as pd
 import requests
 from dotenv import load_dotenv
 from google.transit import gtfs_realtime_pb2
+from map_area import bounds as map_bounds
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -21,10 +22,7 @@ VEHICLE_POSITIONS_URL = (
 POLL_INTERVAL_SECONDS = 60
 STALE_THRESHOLD_SECONDS = 120
 
-LAT_MIN = -33.90
-LAT_MAX = -33.84
-LON_MIN = 151.18
-LON_MAX = 151.23
+LAT_MIN, LAT_MAX, LON_MIN, LON_MAX = map_bounds()
 
 
 load_dotenv(PROJECT_ROOT / ".env")

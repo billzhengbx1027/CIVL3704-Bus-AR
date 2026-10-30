@@ -3,78 +3,141 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Central Sydney Bus Map</title>
+  <title>Central Sydney Transit Map</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <main id="map" aria-label="Central Sydney live bus map"></main>
+  <main id="map" aria-label="Central Sydney live bus, train, metro and light rail map"></main>
 
   <section id="panel" class="panel" aria-label="Map controls">
-    <header class="panel-header">
+    <header class="panel-header" tabindex="0" aria-label="Map controls. Drag this header to move the panel, or use arrow keys while focused." title="Drag to move · arrow keys when focused">
       <div>
         <p class="eyebrow">CIVL3704 · Central Sydney</p>
-        <h1>Bus map</h1>
+        <h1>Transit map</h1>
       </div>
-      <span class="live-badge">LIVE DATA</span>
+      <div class="panel-header-meta">
+        <span class="live-badge">LIVE DATA</span>
+        <span class="panel-drag-cue" aria-hidden="true">⠿ Drag</span>
+      </div>
     </header>
     <p id="status" class="status" aria-live="polite">Loading latest snapshot…</p>
+    <p id="feed-status" class="small-note feed-note" hidden></p>
 
-    <div class="filter-grid">
-      <label>Route
-        <select id="route-filter"><option value="">All routes</option></select>
-      </label>
-      <label>Next stop
-        <select id="stop-filter"><option value="">All next stops</option></select>
-      </label>
-    </div>
+    <section class="panel-section transport-section" aria-labelledby="transport-heading">
+      <div class="section-heading"><h2 id="transport-heading">Show on map</h2></div>
+      <div class="transport-filter-bar" role="group" aria-label="Show vehicles by transport mode">
+        <button type="button" class="transport-chip" data-transport="all" aria-pressed="true">All</button>
+        <button type="button" class="transport-chip" data-transport="bus" aria-pressed="false"><i class="dot bus-outline" aria-hidden="true"></i>Bus</button>
+        <button type="button" class="transport-chip" data-transport="train" aria-pressed="false"><i class="dot train-outline" aria-hidden="true"></i>Train</button>
+        <button type="button" class="transport-chip" data-transport="metro" aria-pressed="false"><i class="dot metro-outline" aria-hidden="true"></i>Metro</button>
+        <button type="button" class="transport-chip" data-transport="light_rail" aria-pressed="false"><i class="dot light-rail-outline" aria-hidden="true"></i>Light rail</button>
+      </div>
+      <input id="transport-filter" type="hidden" value="all">
+    </section>
 
-    <div class="map-options">
-      <label><input id="show-route" type="checkbox" checked> Selected route path</label>
-      <label><input id="show-stops" type="checkbox"> Next stops</label>
-    </div>
-    <p id="shape-status" class="small-note">Choose a route to see one scheduled trip path.</p>
+    <section class="panel-section journey-section" aria-labelledby="journey-heading">
+      <div class="section-heading"><h2 id="journey-heading">Find a direct route</h2></div>
+      <form id="journey-form" autocomplete="off">
+        <label for="journey-mode">Transport
+          <select id="journey-mode">
+            <option value="all">All modes</option>
+            <option value="bus">Bus</option>
+            <option value="train">Train</option>
+            <option value="metro">Metro</option>
+            <option value="light_rail">Light rail</option>
+          </select>
+        </label>
+        <div class="journey-fields">
+          <label for="journey-from">From area or place
+            <input id="journey-from" list="journey-from-options" placeholder="e.g. Broadway" required>
+            <datalist id="journey-from-options"></datalist>
+          </label>
+          <button class="journey-pick" type="button" data-target="from" aria-pressed="false">Choose start on map</button>
+          <label for="journey-to">To area or place
+            <input id="journey-to" list="journey-to-options" placeholder="e.g. Town Hall" required>
+            <datalist id="journey-to-options"></datalist>
+          </label>
+          <button class="journey-pick" type="button" data-target="to" aria-pressed="false">Choose destination on map</button>
+        </div>
+        <div class="journey-actions">
+          <button class="journey-submit" type="submit">Search direct routes</button>
+          <button id="journey-clear" class="journey-clear" type="button">Clear search</button>
+        </div>
+      </form>
+      <p class="small-note journey-note">Search a place or click the map. Stop radius: bus 250 m, light rail 350 m, train and metro 500 m. Direct timetable routes only; today's service may vary.</p>
+      <p id="journey-status" class="journey-status" role="status" aria-live="polite">Enter two places to see nearby direct routes.</p>
+      <div id="journey-results" class="journey-results"></div>
+    </section>
 
-    <div class="section-heading">
-      <h2>Delay display</h2>
-      <label class="mode-label">Mode
-        <select id="mode-select">
-          <option value="reference">TfNSW time window</option>
-          <option value="custom">My settings</option>
-        </select>
-      </label>
-    </div>
-    <p id="mode-note" class="small-note"></p>
-    <div id="custom-settings" class="custom-settings" hidden>
+    <div class="panel-section">
+      <div class="section-heading"><h2>Explore the map</h2></div>
       <div class="filter-grid">
-        <label>Early from (min)
-          <input id="early-minutes" type="number" min="0.5" max="60" step="0.5" value="1">
+        <label>Route
+          <select id="route-filter"><option value="">All routes</option></select>
         </label>
-        <label>Late from (min)
-          <input id="late-minutes" type="number" min="0.5" max="120" step="0.5" value="3">
+        <label>Next stop (current vehicles)
+          <select id="stop-filter"><option value="">All next stops</option></select>
         </label>
       </div>
-      <div class="colour-grid">
-        <label>Early <input id="colour-early" type="color" value="#4da3ff"></label>
-        <label>On time <input id="colour-on-time" type="color" value="#39d98a"></label>
-        <label>Late <input id="colour-late" type="color" value="#ff4d4f"></label>
-        <label>No data <input id="colour-no-data" type="color" value="#a7adb4"></label>
+      <p id="filter-status" class="filter-status" hidden></p>
+      <div class="map-options">
+        <label><input id="show-route" type="checkbox" checked> Selected route path</label>
+        <label><input id="show-stops" type="checkbox"> Next stops</label>
       </div>
-      <button id="reset-settings" type="button">Reset my settings</button>
+      <p id="shape-status" class="small-note shape-note">Choose a route to see scheduled trip paths.</p>
     </div>
 
-    <div id="legend" class="legend" aria-label="Map legend">
-      <span><i class="dot" data-status="early"></i>Early</span>
-      <span><i class="dot" data-status="on_time"></i>On time</span>
-      <span><i class="dot" data-status="late"></i>Late</span>
-      <span><i class="dot" data-status="no_delay_data"></i>No delay data</span>
-      <span><i class="dot stale-dot"></i>Old position</span>
+    <div class="panel-section delay-section">
+      <div class="section-heading">
+        <h2>Delay display</h2>
+        <label class="mode-label">Mode
+          <select id="mode-select">
+            <option value="reference">Bus reference window</option>
+            <option value="custom">My settings</option>
+          </select>
+        </label>
+      </div>
+      <p id="mode-note" class="small-note mode-note"></p>
+      <div id="custom-settings" class="custom-settings" hidden>
+        <div class="filter-grid">
+          <label>Early from (min)
+            <input id="early-minutes" type="number" min="0.5" max="60" step="0.5" value="1">
+          </label>
+          <label>Late from (min)
+            <input id="late-minutes" type="number" min="0.5" max="120" step="0.5" value="3">
+          </label>
+        </div>
+        <div class="colour-grid">
+          <label>Early <input id="colour-early" type="color" value="#4da3ff"></label>
+          <label>On time <input id="colour-on-time" type="color" value="#39d98a"></label>
+          <label>Late <input id="colour-late" type="color" value="#ff4d4f"></label>
+          <label>No data <input id="colour-no-data" type="color" value="#a7adb4"></label>
+        </div>
+        <button id="reset-settings" type="button">Reset my settings</button>
+      </div>
+      <div id="legend" class="legend" aria-label="Map legend">
+        <span><i class="dot" data-status="early"></i>Early</span>
+        <span><i class="dot" data-status="on_time"></i>On time</span>
+        <span><i class="dot" data-status="late"></i>Late</span>
+        <span><i class="dot" data-status="no_delay_data"></i>No delay data</span>
+        <span><i class="dot stale-dot"></i>Old position</span>
+      </div>
+      <div class="legend" aria-label="Transport marker outlines">
+        <span><i class="dot bus-outline"></i>Bus</span>
+        <span><i class="dot train-outline"></i>Train</span>
+        <span><i class="dot metro-outline"></i>Metro</span>
+        <span><i class="dot light-rail-outline"></i>Light rail</span>
+      </div>
     </div>
-    <p class="small-note data-note">Colours are chosen by this project. Next-stop delays are predictions, not an official performance result. Proximity to a stop does not confirm a stop was served.</p>
-    <p class="keys">P projection · L route labels · B basemap · F fullscreen · R refresh</p>
+    <footer class="panel-footer">
+      <p class="keys">P projection (C calibrate inside it) · L route labels · B basemap · F fullscreen · R refresh</p>
+      <button id="reset-panel-position" type="button" class="reset-panel-position">Reset panel position</button>
+    </footer>
   </section>
 
   <div id="error" class="error" role="alert" hidden></div>
+  <div id="calibration-hint" class="calibration-hint" role="status" aria-live="polite" hidden></div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="/static/delay_rules.js"></script>

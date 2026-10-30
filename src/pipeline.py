@@ -1,53 +1,42 @@
-import subprocess
-import sys
 import time
 from datetime import datetime
-from pathlib import Path
 
-from delay_processing import main as process_delay
-from gtfs_realtime import fetch_realtime_buses
-from gtfs_trip_updates import fetch_trip_updates
-
-
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-STATIC_SCRIPT = PROJECT_ROOT / "src" / "gtfs_static.py"
-POLL_INTERVAL_SECONDS = 30
+from transit_pipeline import build_snapshot, fetch_all
+from train_static import (METRO_STATIC, TRAIN_STATIC, download_metro_static,
+                          download_train_static)
 
 
-def run_static_matching():
-    """Run the existing Static GTFS matching script once."""
-
-    subprocess.run(
-        [sys.executable, str(STATIC_SCRIPT)],
-        cwd=PROJECT_ROOT,
-        check=True,
-    )
+POLL_INTERVAL_SECONDS = 60
 
 
 def run_pipeline_cycle():
-    """Run one complete Central Sydney delay-data cycle."""
+    """Run one complete Central Sydney multimodal data cycle."""
 
     print("\n============================================")
     print("Pipeline cycle:", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     print("============================================")
 
-    print("\n[1/4] Fetching Vehicle Positions...")
-    fetch_realtime_buses()
+    for label, root, download in (("Sydney Trains", TRAIN_STATIC, download_train_static),
+                                  ("Metro", METRO_STATIC, download_metro_static)):
+        trips = root / "trips.txt"
+        if not trips.exists() or time.time() - trips.stat().st_mtime > 24 * 3600:
+            try:
+                print(f"Refreshing {label} static GTFS...")
+                download()
+            except Exception as error:
+                print(f"{label} static GTFS unavailable:", error)
 
-    print("\n[2/4] Matching Static GTFS...")
-    run_static_matching()
+    print("\n[1/2] Fetching Vehicle Positions and Trip Updates...")
+    fetch_all()
 
-    print("\n[3/4] Fetching Trip Updates...")
-    fetch_trip_updates()
-
-    print("\n[4/4] Calculating Central Sydney delays...")
-    process_delay()
+    print("\n[2/2] Matching static GTFS and calculating next-stop delays...")
+    build_snapshot()
 
     print("\nPipeline cycle completed successfully.")
 
 
 def main():
-    print("Starting the Central Sydney bus-delay pipeline.")
+    print("Starting the Central Sydney bus, train, metro and light rail pipeline.")
     print(f"Cycle interval: {POLL_INTERVAL_SECONDS} seconds")
     print("Press Ctrl+C to stop.")
 
@@ -57,8 +46,6 @@ def main():
 
             try:
                 run_pipeline_cycle()
-            except subprocess.CalledProcessError as error:
-                print("A pipeline script failed:", error)
             except Exception as error:
                 print("Pipeline cycle failed:", error)
 
