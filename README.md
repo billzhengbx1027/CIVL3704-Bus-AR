@@ -74,7 +74,7 @@ Results come from the static timetable and are not filtered by today's service d
 
 ## Map area and projection calibration
 
-`map_area.json` holds the south, west, north and east bounds of the map and is shared by the pipeline, route index and web page. The current values (latitude −33.909 to −33.814, longitude 151.106 to 151.271) were estimated from a photo of the Sydney Harbour model and roughly cover Drummoyne to Rose Bay and Lane Cove to Redfern.
+`map_area.json` holds the south, west, north and east bounds of the map and is shared by the pipeline, route index and web page. The current values (latitude −33.895 to −33.835, longitude 151.145 to 151.265) are the corner coordinates noted from the Sydney Harbour model and roughly cover Drummoyne to Rose Bay and Neutral Bay to Redfern.
 
 To project onto the physical model:
 

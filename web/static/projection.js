@@ -1,5 +1,5 @@
 // Replaced by /api/map-area (map_area.json) once it loads.
-let mapArea = { south: -33.909, west: 151.106, north: -33.814, east: 151.271 };
+let mapArea = { south: -33.895, west: 151.145, north: -33.835, east: 151.265 };
 const ROUTE_PATH_COLOUR = "#765bb2";
 const REFRESH_MS = 5_000;
 // Permanent labels are DOM elements; beyond this many they make zooming slow.

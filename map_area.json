@@ -1,8 +1,8 @@
 {
   "name": "Sydney Harbour physical model",
-  "note": "Estimated from a photo of the model; refine with calibration mode (P, then C) and save.",
-  "south": -33.909,
-  "west": 151.106,
-  "north": -33.814,
-  "east": 151.271
+  "note": "Corner coordinates noted from the model (NE -33.835, 151.265; SW -33.895, 151.145); refine with calibration mode (P, then C) and save.",
+  "south": -33.895,
+  "west": 151.145,
+  "north": -33.835,
+  "east": 151.265
 }
