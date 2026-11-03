@@ -4,11 +4,11 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Central Sydney Transit Map</title>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css">
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <main id="map" aria-label="Central Sydney live bus, train, metro and light rail map"></main>
+  <main id="map" aria-label="Central Sydney live bus, train, metro, light rail and ferry map"></main>
 
   <section id="panel" class="panel" aria-label="Map controls">
     <header class="panel-header" tabindex="0" aria-label="Map controls. Drag this header to move the panel, or use arrow keys while focused." title="Drag to move · arrow keys when focused">
@@ -32,6 +32,7 @@
         <button type="button" class="transport-chip" data-transport="train" aria-pressed="false"><i class="dot train-outline" aria-hidden="true"></i>Train</button>
         <button type="button" class="transport-chip" data-transport="metro" aria-pressed="false"><i class="dot metro-outline" aria-hidden="true"></i>Metro</button>
         <button type="button" class="transport-chip" data-transport="light_rail" aria-pressed="false"><i class="dot light-rail-outline" aria-hidden="true"></i>Light rail</button>
+        <button type="button" class="transport-chip" data-transport="ferry" aria-pressed="false"><i class="dot ferry-outline" aria-hidden="true"></i>Ferry</button>
       </div>
       <input id="transport-filter" type="hidden" value="all">
     </section>
@@ -46,6 +47,7 @@
             <option value="train">Train</option>
             <option value="metro">Metro</option>
             <option value="light_rail">Light rail</option>
+            <option value="ferry">Ferry</option>
           </select>
         </label>
         <div class="journey-fields">
@@ -65,7 +67,7 @@
           <button id="journey-clear" class="journey-clear" type="button">Clear search</button>
         </div>
       </form>
-      <p class="small-note journey-note">Search a place or click the map. Stop radius: bus 250 m, light rail 350 m, train and metro 500 m. Direct timetable routes running today; times of day may vary.</p>
+      <p class="small-note journey-note">Search a place or click the map. Stop radius: bus 250 m, light rail 350 m, ferry 400 m, train and metro 500 m. Direct timetable routes running today; times of day may vary.</p>
       <p id="journey-status" class="journey-status" role="status" aria-live="polite">Enter two places to see nearby direct routes.</p>
       <div id="journey-results" class="journey-results"></div>
     </section>
@@ -128,6 +130,7 @@
         <span><i class="dot train-outline"></i>Train</span>
         <span><i class="dot metro-outline"></i>Metro</span>
         <span><i class="dot light-rail-outline"></i>Light rail</span>
+        <span><i class="dot ferry-outline"></i>Ferry</span>
       </div>
     </div>
     <footer class="panel-footer">
@@ -139,7 +142,7 @@
   <div id="error" class="error" role="alert" hidden></div>
   <div id="calibration-hint" class="calibration-hint" role="status" aria-live="polite" hidden></div>
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="/static/vendor/leaflet/leaflet.js"></script>
   <script src="/static/delay_rules.js"></script>
   <script src="/static/projection.js"></script>
 </body>

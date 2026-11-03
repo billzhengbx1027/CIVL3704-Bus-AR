@@ -27,6 +27,11 @@ WEB_ROOT = PROJECT_ROOT / "web"
 ROUTE_INDEX_FILE = PROJECT_ROOT / "data" / "journey_routes.sqlite"
 TRIP_UPDATES_FILE = PROJECT_ROOT / "data" / "transit_trip_updates_enriched.csv"
 FEED_STATUS_FILE = PROJECT_ROOT / "data" / "feed_status.json"
+STATIC_TYPES = {
+    ".css": "text/css; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".png": "image/png",
+}
 
 
 def _clean(value):
@@ -193,6 +198,7 @@ def demo_snapshot() -> dict:
         ("metro", "M1", -33.8700, 151.2040, "on_time", 20),
         ("light_rail", "L1", -33.8790, 151.2020, "on_time", 20),
         ("light_rail", "L2", -33.8620, 151.2100, "no_delay_data", None),
+        ("ferry", "F1", -33.8585, 151.2105, "on_time", 45),
     ]
     vehicles = []
     for index, (mode, route, lat, lon, status, delay) in enumerate(demo_rows, start=1):
@@ -251,23 +257,15 @@ def make_handler(data_file: Path = LATEST_DATA_FILE, demo: bool = False):
                 html = (WEB_ROOT / "templates" / "index.html").read_bytes()
                 self._send_bytes(html, "text/html; charset=utf-8")
                 return
-            if path == "/static/style.css":
-                self._send_bytes(
-                    (WEB_ROOT / "static" / "style.css").read_bytes(),
-                    "text/css; charset=utf-8",
-                )
-                return
-            if path == "/static/projection.js":
-                self._send_bytes(
-                    (WEB_ROOT / "static" / "projection.js").read_bytes(),
-                    "text/javascript; charset=utf-8",
-                )
-                return
-            if path == "/static/delay_rules.js":
-                self._send_bytes(
-                    (WEB_ROOT / "static" / "delay_rules.js").read_bytes(),
-                    "text/javascript; charset=utf-8",
-                )
+            if path.startswith("/static/"):
+                # Includes the bundled Leaflet in static/vendor, so the page works offline.
+                static_root = (WEB_ROOT / "static").resolve()
+                target = (static_root / path.removeprefix("/static/")).resolve()
+                content_type = STATIC_TYPES.get(target.suffix.lower())
+                if content_type and target.is_relative_to(static_root) and target.is_file():
+                    self._send_bytes(target.read_bytes(), content_type)
+                else:
+                    self._send_json({"error": "Not found"}, 404)
                 return
             if path == "/health":
                 self._send_json({"status": "ok"})

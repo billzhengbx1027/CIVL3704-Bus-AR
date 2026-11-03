@@ -1,4 +1,4 @@
-"""Direct bus, train, metro and light rail routes around Central Sydney places."""
+"""Direct bus, train, metro, light rail and ferry routes around Central Sydney places."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ SYDNEY = ZoneInfo("Australia/Sydney")
 FRESH_SECONDS = 120
 ARRIVAL_WINDOW_SECONDS = 60 * 60
 AREA_RADIUS_METRES = 250
-SEARCH_RADIUS = {"bus": 250, "train": 500, "metro": 500, "light_rail": 350, "all": 500}
+SEARCH_RADIUS = {"bus": 250, "train": 500, "metro": 500, "light_rail": 350, "ferry": 400, "all": 500}
 INDEX_VERSION = 6
 BUILD_RETRY_SECONDS = 60
 
@@ -64,7 +64,8 @@ class RouteIndex:
     def _sources(self) -> list[tuple[Path, set[str]]]:
         complete_modes = set(MODES)
         dedicated = []
-        for mode, dirname in (("train", "static_train"), ("metro", "static_metro")):
+        for mode, dirname in (("train", "static_train"), ("metro", "static_metro"),
+                              ("ferry", "static_ferry")):
             root = self.static_root.parent / dirname
             if all((root / name).exists() for name in STATIC_FILES):
                 complete_modes.discard(mode)
@@ -490,7 +491,7 @@ def search_journey(index: RouteIndex, origin: str, destination: str,
                    snapshot: dict, updates_file: Path, *, mode: str = "all",
                    now: float | None = None) -> dict:
     if mode not in (*MODES, "all"):
-        raise ValueError("Choose bus, train, metro, light rail or all modes")
+        raise ValueError("Choose bus, train, metro, light rail, ferry or all modes")
     if origin == destination:
         raise ValueError("Choose two different stops")
     start = index.get_stop(origin)
@@ -532,7 +533,7 @@ def search_area_journey(index: RouteIndex, origin: str, destination: str,
                         now: float | None = None) -> dict:
     """Find direct trips between any boardable stops near two places."""
     if mode not in (*MODES, "all"):
-        raise ValueError("Choose bus, train, metro, light rail or all modes")
+        raise ValueError("Choose bus, train, metro, light rail, ferry or all modes")
     start = resolve_place(index, origin)
     end = resolve_place(index, destination)
     if _distance(start["latitude"], start["longitude"],

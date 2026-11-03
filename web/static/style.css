@@ -183,6 +183,7 @@ body.map-picking #map { cursor: crosshair; }
 .stale-dot { background: #7f8a96; }
 .bus-outline { width: 12px; height: 12px; background: #39d98a; border: 2px solid #fff; box-shadow: 0 0 0 1px #8aa0a8; }
 .train-outline, .metro-outline, .light-rail-outline { width: 18px; height: 10px; border-radius: 2px; background: #39d98a; }
+.ferry-outline { width: 18px; height: 10px; border-radius: 5px; background: #39d98a; border: 2px solid #a86b00; }
 .train-outline { border: 2px solid #203f83; }
 .metro-outline { border: 2px solid #168388; }
 .light-rail-outline { border: 2px solid #743aa5; }
@@ -196,6 +197,7 @@ body.map-picking #map { cursor: crosshair; }
 .rail-vehicle--train { border-color: #203f83; }
 .rail-vehicle--metro { border-color: #168388; }
 .rail-vehicle--light_rail { width: 18px; height: 10px; border-color: #743aa5; }
+.rail-vehicle--ferry { border-color: #a86b00; border-radius: 6px; }
 .rail-vehicle--stale { opacity: .65; }
 .panel-footer { margin-top: 19px; padding-top: 15px; border-top: 1px solid var(--line); }
 .keys { color: #87979d !important; font-size: 10px; line-height: 1.5; }

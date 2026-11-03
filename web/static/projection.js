@@ -14,6 +14,7 @@ const DEFAULT_COLOURS = {
   late: "#ff4d4f",
   no_delay_data: "#a7adb4"
 };
+const MODE_NAMES = { bus: "Bus", train: "Train", metro: "Metro", light_rail: "Light rail", ferry: "Ferry" };
 const DEFAULT_SETTINGS = {
   mode: "reference",
   earlyMinutes: 1,
@@ -43,10 +44,22 @@ function fitMapArea() {
   map.fitBounds(areaBounds(), { padding: projectionMode ? [0, 0] : [4, 4], animate: false });
 }
 
+// Without internet (e.g. in the model room) the tiles fail; fall back to the plain
+// background instead of a grey checkerboard. B still toggles the basemap.
+let tileLoads = 0;
+let tileErrors = 0;
 L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
   maxZoom: 19,
   attribution: "&copy; OpenStreetMap contributors"
-}).addTo(map);
+}).on("tileload", () => { tileLoads++; })
+  .on("tileerror", () => {
+    if (++tileErrors !== 6 || tileLoads > 0) return;
+    document.body.classList.add("no-basemap");
+    calibrationHint.textContent = "Basemap tiles could not load (offline?). Showing vehicles on a plain background; press B to toggle.";
+    calibrationHint.hidden = false;
+    setTimeout(() => { if (!calibrating) calibrationHint.hidden = true; }, 6000);
+  })
+  .addTo(map);
 
 const markerLayer = L.layerGroup().addTo(map);
 const stopLayer = L.layerGroup().addTo(map);
@@ -361,7 +374,7 @@ function selectTransportMode(mode, refreshMap = true) {
 function popupHtml(bus) {
   const status = statusFor(bus);
   const stopName = bus.next_stop?.name || bus.next_stop_id || "unknown";
-  const modeName = bus.mode === "light_rail" ? "Light rail" : bus.mode === "train" ? "Train" : bus.mode === "metro" ? "Metro" : "Bus";
+  const modeName = MODE_NAMES[bus.mode] || "Bus";
   return `<strong>${modeName} ${escapeHtml(bus.route)}</strong><br>` +
     `${escapeHtml(bus.headsign || bus.route_long_name || "")}<br>` +
     `${escapeHtml(delayText(bus))}<br>` +
@@ -410,7 +423,7 @@ function renderVehicles(buses) {
     seen.add(key);
     const status = statusFor(bus);
     if (status === "stale") oldCount++;
-    const rail = ["train", "metro", "light_rail"].includes(bus.mode);
+    const rail = ["train", "metro", "light_rail", "ferry"].includes(bus.mode);
     let entry = vehicleMarkers.get(key);
     if (!entry) {
       const marker = rail
@@ -486,7 +499,7 @@ function render() {
     const route = controls.route.value;
     const stop = controls.stop.value;
     const stopName = selectedStop?.name || controls.stop.selectedOptions[0]?.textContent?.replace(/ \(no current vehicles\)$/, "") || stop;
-    const modeName = { bus: "bus", train: "train", metro: "metro", light_rail: "light rail" }[controls.transport.value];
+    const modeName = MODE_NAMES[controls.transport.value]?.toLowerCase();
     controls.filterStatus.textContent = route && stop
       ? `No current ${route} vehicle has ${stopName} as its next stop. Choose another stop or All next stops.`
       : route ? `No current vehicles are available for route ${route}.`
@@ -641,7 +654,7 @@ function renderJourney(result, focusStops = false) {
     heading.className = "journey-route-heading";
     const number = document.createElement("span");
     number.className = "journey-route-number";
-    const modeName = route.mode === "light_rail" ? "Light rail" : route.mode === "train" ? "Train" : route.mode === "metro" ? "Metro" : "Bus";
+    const modeName = MODE_NAMES[route.mode] || "Bus";
     number.textContent = `${modeName} ${route.route}`;
     const destination = document.createElement("span");
     destination.className = "journey-destination";

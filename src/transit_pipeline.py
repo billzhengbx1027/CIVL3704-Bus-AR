@@ -1,4 +1,4 @@
-"""Collect and join TfNSW bus, train, metro and light rail feeds."""
+"""Collect and join TfNSW bus, train, metro, light rail and ferry feeds."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from google.protobuf.message import DecodeError
 from map_area import bounds as map_bounds
 from map_data import stop_lookup
 from transit_modes import FEEDS, POSITION_DISPLAY_SECONDS, mode_for_route_type
-from train_static import METRO_STATIC, TRAIN_STATIC
+from train_static import FERRY_STATIC, METRO_STATIC, TRAIN_STATIC
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -35,6 +35,8 @@ SNAPSHOT_FILE = DATA / "central_sydney_vehicles_with_delay.csv"
 FEED_STATUS_FILE = DATA / "feed_status.json"
 FRESH_SECONDS = 120
 SYDNEY = ZoneInfo("Australia/Sydney")
+# Modes whose realtime trip IDs only match their own dedicated timetable.
+DEDICATED_STATIC = (("train", TRAIN_STATIC), ("metro", METRO_STATIC), ("ferry", FERRY_STATIC))
 
 POSITION_COLUMNS = (
     "mode", "feed", "vehicle_id", "trip_id", "route_id_realtime",
@@ -424,7 +426,7 @@ def _trip_routes() -> pd.DataFrame:
     global _trip_routes_cache
     signature = tuple(
         (str(path), path.stat().st_size, path.stat().st_mtime_ns) if path.exists() else str(path)
-        for root in (STATIC, TRAIN_STATIC, METRO_STATIC)
+        for root in (STATIC, *(root for _, root in DEDICATED_STATIC))
         for path in (root / "routes.txt", root / "trips.txt")
     )
     if _trip_routes_cache and _trip_routes_cache[0] == signature:
@@ -432,7 +434,7 @@ def _trip_routes() -> pd.DataFrame:
     routes = pd.read_csv(STATIC / "routes.txt", dtype=str, keep_default_na=False)
     trips = pd.read_csv(STATIC / "trips.txt", dtype=str, keep_default_na=False)
     routes["mode"] = routes["route_type"].map(mode_for_route_type)
-    for mode, root in (("train", TRAIN_STATIC), ("metro", METRO_STATIC)):
+    for mode, root in DEDICATED_STATIC:
         if all((root / name).exists() for name in ("routes.txt", "trips.txt")):
             # Dedicated schedules share trip IDs with their realtime feeds.
             routes = routes[routes["mode"] != mode]
@@ -464,7 +466,7 @@ def build_snapshot(*, now: int | None = None, updates_received_at: int | None = 
     updates = pd.read_csv(UPDATES_FILE, dtype=str, keep_default_na=False)
     for column in ("trip_update_timestamp", "arrival_time", "departure_time", "delay_seconds", "stop_sequence"):
         updates[column] = pd.to_numeric(updates[column], errors="coerce")
-    for mode, root in (("train", TRAIN_STATIC), ("metro", METRO_STATIC)):
+    for mode, root in DEDICATED_STATIC:
         _fill_rail_predictions(updates, vehicles, now, mode, root)
     # Rewrite only when predictions change, so the web server keeps its parsed copy.
     global _enriched_text

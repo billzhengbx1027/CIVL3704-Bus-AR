@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import train_static
 import transit_pipeline
 import visualization
-from transit_modes import Feed
+from transit_modes import Feed, mode_for_route_type
 
 
 class TransitPipelineTests(unittest.TestCase):
@@ -268,6 +268,28 @@ class TransitPipelineTests(unittest.TestCase):
                 finally:
                     server.shutdown()
                     server.server_close()
+
+    def test_ferry_route_types_map_to_ferry_mode(self):
+        for route_type in ("4", "1000", "1200"):
+            self.assertEqual(mode_for_route_type(route_type), "ferry")
+        self.assertEqual(mode_for_route_type("401"), "metro")
+
+    def test_static_files_include_bundled_leaflet_but_not_other_files(self):
+        server = visualization.ThreadingHTTPServer(("127.0.0.1", 0), visualization.make_handler(demo=True))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        try:
+            with urllib.request.urlopen(base + "/static/vendor/leaflet/leaflet.js") as response:
+                self.assertEqual(response.headers["Content-Type"], "text/javascript; charset=utf-8")
+                self.assertIn(b"Leaflet", response.read(400))
+            for path in ("/static/../../src/map_area.py", "/static/%2e%2e/templates/index.html",
+                         "/static/vendor/leaflet/LICENSE"):
+                with self.subTest(path=path), self.assertRaises(urllib.error.HTTPError) as raised:
+                    urllib.request.urlopen(base + path)
+                self.assertEqual(raised.exception.code, 404)
+        finally:
+            server.shutdown()
+            server.server_close()
 
 
 if __name__ == "__main__":

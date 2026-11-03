@@ -14,17 +14,21 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 STATIC_ROOT = PROJECT_ROOT / "data" / "static"
 TRAIN_ROOT = PROJECT_ROOT / "data" / "static_train"
 METRO_ROOT = PROJECT_ROOT / "data" / "static_metro"
+FERRY_ROOT = PROJECT_ROOT / "data" / "static_ferry"
+ROOTS = (STATIC_ROOT, TRAIN_ROOT, METRO_ROOT, FERRY_ROOT)
 SHAPES_FILE = STATIC_ROOT / "shapes.txt"
 INDEX_FILE = PROJECT_ROOT / "data" / "shape_offsets.json"
 TRAIN_INDEX_FILE = PROJECT_ROOT / "data" / "train_shape_offsets.json"
 METRO_INDEX_FILE = PROJECT_ROOT / "data" / "metro_shape_offsets.json"
+FERRY_INDEX_FILE = PROJECT_ROOT / "data" / "ferry_shape_offsets.json"
+INDEX_FILES = {TRAIN_ROOT: TRAIN_INDEX_FILE, METRO_ROOT: METRO_INDEX_FILE, FERRY_ROOT: FERRY_INDEX_FILE}
 _index_lock = threading.Lock()
 _loaded_indexes: dict[Path, tuple[tuple, dict]] = {}
 
 
 def _signature(name: str) -> tuple:
     return tuple((root.joinpath(name).stat().st_size, root.joinpath(name).stat().st_mtime_ns)
-                 if root.joinpath(name).exists() else None for root in (STATIC_ROOT, TRAIN_ROOT, METRO_ROOT))
+                 if root.joinpath(name).exists() else None for root in ROOTS)
 
 
 def stop_lookup() -> dict[str, dict]:
@@ -35,7 +39,7 @@ def stop_lookup() -> dict[str, dict]:
 def _stop_lookup(_version: tuple) -> dict[str, dict]:
     """Keep static stop names and coordinates available for vehicle popups."""
     result = {}
-    for root in (STATIC_ROOT, TRAIN_ROOT, METRO_ROOT):
+    for root in ROOTS:
         stops_file = root / "stops.txt"
         if not stops_file.exists():
             continue
@@ -60,7 +64,7 @@ def trip_shape_lookup() -> dict[str, tuple[str, Path]]:
 @lru_cache(maxsize=4)
 def _trip_shape_lookup(_version: tuple) -> dict[str, tuple[str, Path]]:
     result = {}
-    for root in (STATIC_ROOT, TRAIN_ROOT, METRO_ROOT):
+    for root in ROOTS:
         trips_file = root / "trips.txt"
         if not trips_file.exists():
             continue
@@ -136,8 +140,7 @@ def route_shape_for_trip(trip_id: str) -> dict | None:
         return None
     shape_id, root = shape_info
     shapes_file = root / "shapes.txt"
-    index_file = (TRAIN_INDEX_FILE if root == TRAIN_ROOT else
-                  METRO_INDEX_FILE if root == METRO_ROOT else INDEX_FILE)
+    index_file = INDEX_FILES.get(root, INDEX_FILE)
     spans = _shape_index(shapes_file, index_file).get(shape_id)
     if not spans:
         return None

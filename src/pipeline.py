@@ -3,13 +3,13 @@ import time
 from datetime import datetime
 
 from transit_pipeline import build_snapshot, fetch_all
-from train_static import (METRO_STATIC, TRAIN_STATIC, download_metro_static,
-                          download_train_static, last_checked)
+from train_static import (FERRY_STATIC, METRO_STATIC, TRAIN_STATIC, download_ferry_static,
+                          download_metro_static, download_train_static, last_checked)
 
 
 # Vehicle Positions are small and move the map; Trip Updates are large (about
 # 120,000 stop rows for buses) and change less often, so they are fetched less
-# often. 15 s / 60 s uses about 43,000 TfNSW requests a day across the 6 feeds.
+# often. 15 s / 60 s uses about 50,000 TfNSW requests a day across the 7 feeds.
 POSITIONS_INTERVAL_SECONDS = 15
 UPDATES_INTERVAL_SECONDS = 60
 STATIC_REFRESH_SECONDS = 24 * 3600
@@ -21,7 +21,8 @@ _static_thread: threading.Thread | None = None
 
 def _refresh_rail_static() -> None:
     for label, root, download in (("Sydney Trains", TRAIN_STATIC, download_train_static),
-                                  ("Metro", METRO_STATIC, download_metro_static)):
+                                  ("Metro", METRO_STATIC, download_metro_static),
+                                  ("Sydney Ferries", FERRY_STATIC, download_ferry_static)):
         checked = last_checked(root)
         if checked is not None and time.time() - checked <= STATIC_REFRESH_SECONDS:
             continue
@@ -64,7 +65,7 @@ def run_pipeline_cycle(include_updates: bool = True, updates_received_at: int | 
 
 
 def main():
-    print("Starting the Central Sydney bus, train, metro and light rail pipeline.")
+    print("Starting the Central Sydney bus, train, metro, light rail and ferry pipeline.")
     print(f"Vehicle positions every {POSITIONS_INTERVAL_SECONDS} seconds, "
           f"trip updates every {UPDATES_INTERVAL_SECONDS} seconds")
     print("Press Ctrl+C to stop.")

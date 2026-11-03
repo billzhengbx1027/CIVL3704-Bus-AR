@@ -30,9 +30,13 @@ FEEDS = (
     Feed("parramatta", "light_rail",
          "https://api.transport.nsw.gov.au/v1/gtfs/vehiclepos/lightrail/parramatta",
          "https://api.transport.nsw.gov.au/v1/gtfs/realtime/lightrail/parramatta"),
+    # The v2 ferry endpoints return empty feeds; v1 carries Sydney Ferries.
+    Feed("sydneyferries", "ferry",
+         "https://api.transport.nsw.gov.au/v1/gtfs/vehiclepos/ferries/sydneyferries",
+         "https://api.transport.nsw.gov.au/v1/gtfs/realtime/ferries/sydneyferries"),
 )
 
-MODES = ("bus", "train", "metro", "light_rail")
+MODES = ("bus", "train", "metro", "light_rail", "ferry")
 POSITION_DISPLAY_SECONDS = 10 * 60
 
 
@@ -50,4 +54,6 @@ def mode_for_route_type(route_type: str) -> str | None:
         return "metro"
     if value == 0 or 900 <= value <= 906:
         return "light_rail"
+    if value == 4 or 1000 <= value <= 1021 or value == 1200:
+        return "ferry"
     return None

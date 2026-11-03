@@ -1,4 +1,4 @@
-"""Download dedicated Sydney Trains and Metro GTFS schedules."""
+"""Download dedicated Sydney Trains, Metro and Sydney Ferries GTFS schedules."""
 
 from __future__ import annotations
 
@@ -18,8 +18,10 @@ ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "data"
 TRAIN_STATIC = DATA / "static_train"
 METRO_STATIC = DATA / "static_metro"
+FERRY_STATIC = DATA / "static_ferry"
 SCHEDULE_URL = "https://api.transport.nsw.gov.au/v1/gtfs/schedule/sydneytrains"
 METRO_SCHEDULE_URL = "https://api.transport.nsw.gov.au/v2/gtfs/schedule/metro"
+FERRY_SCHEDULE_URL = "https://api.transport.nsw.gov.au/v1/gtfs/schedule/ferries/sydneyferries"
 REQUIRED_FILES = ("routes.txt", "trips.txt", "stops.txt", "stop_times.txt", "shapes.txt")
 OPTIONAL_FILES = ("calendar.txt", "calendar_dates.txt")
 # Touched after every successful check; unchanged files keep their old mtime so
@@ -81,10 +83,17 @@ def download_metro_static(api_key: str | None = None) -> list[str]:
     return download_static(METRO_STATIC, METRO_SCHEDULE_URL, "Metro", api_key)
 
 
+def download_ferry_static(api_key: str | None = None) -> list[str]:
+    return download_static(FERRY_STATIC, FERRY_SCHEDULE_URL, "Sydney Ferries", api_key)
+
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Download dedicated rail GTFS schedules")
-    parser.add_argument("--metro", action="store_true", help="Download Metro instead of Sydney Trains")
+    parser = argparse.ArgumentParser(description="Download dedicated rail and ferry GTFS schedules")
+    choice = parser.add_mutually_exclusive_group()
+    choice.add_argument("--metro", action="store_true", help="Download Metro instead of Sydney Trains")
+    choice.add_argument("--ferry", action="store_true", help="Download Sydney Ferries instead of Sydney Trains")
     args = parser.parse_args()
-    label = "Metro" if args.metro else "Sydney Trains"
-    changed = download_metro_static() if args.metro else download_train_static()
+    label = "Metro" if args.metro else "Sydney Ferries" if args.ferry else "Sydney Trains"
+    changed = (download_metro_static() if args.metro else
+               download_ferry_static() if args.ferry else download_train_static())
     print(f"{label} GTFS: " + (f"updated {', '.join(changed)}" if changed else "already up to date"))
