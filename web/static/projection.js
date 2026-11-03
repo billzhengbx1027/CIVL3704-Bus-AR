@@ -788,14 +788,19 @@ async function updateRouteShape() {
 }
 
 let lastSnapshotText = null;
+let lastSnapshotEtag = null;
 
 async function refresh() {
   if (refreshInFlight) return;
   refreshInFlight = true;
   try {
-    const response = await fetch("/api/vehicles", { cache: "no-store" });
-    const text = await response.text();
-    if (response.ok && text === lastSnapshotText) {
+    const response = await fetch("/api/vehicles", {
+      cache: "no-store",
+      headers: lastSnapshotEtag ? { "If-None-Match": lastSnapshotEtag } : {}
+    });
+    const unchanged = response.status === 304;
+    const text = unchanged ? lastSnapshotText : await response.text();
+    if (unchanged || (response.ok && text === lastSnapshotText)) {
       // Same pipeline snapshot: only position ages (and grey "old" markers) change.
       render();
       if (currentJourney && Date.now() - lastJourneyFetch > 20_000) runJourney(currentJourney);
@@ -805,6 +810,7 @@ async function refresh() {
     const payload = JSON.parse(text);
     if (!response.ok) throw new Error(payload.error || "Could not load transit data");
     lastSnapshotText = text;
+    lastSnapshotEtag = response.headers.get("ETag");
     snapshot = payload;
     for (const stop of payload.stops || []) knownStops.set(String(stop.id), stop);
     updateFilters();

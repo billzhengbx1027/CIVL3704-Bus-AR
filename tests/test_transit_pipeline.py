@@ -1,9 +1,14 @@
 """Check multimodal GTFS parsing and rail schedule fallback."""
 
 import csv
+import io
 import sys
 import tempfile
+import threading
 import unittest
+import urllib.error
+import urllib.request
+import zipfile
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,6 +19,7 @@ import pandas as pd
 from google.transit import gtfs_realtime_pb2
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+import train_static
 import transit_pipeline
 import visualization
 from transit_modes import Feed
@@ -192,6 +198,76 @@ class TransitPipelineTests(unittest.TestCase):
                 snapshot = visualization.load_vehicle_snapshot(snapshot_file)
             self.assertEqual([vehicle["vehicle_id"] for vehicle in snapshot["vehicles"]], ["recent"])
             self.assertIs(snapshot["vehicles"][0]["valid"], False)
+
+    def test_trip_updates_keep_trips_on_the_map_or_calling_inside_it(self):
+        rows = [
+            {"trip_id": "on-map", "stop_id": "outside-1"},
+            {"trip_id": "on-map", "stop_id": "outside-2"},
+            {"trip_id": "approaching", "stop_id": "outside-3"},
+            {"trip_id": "approaching", "stop_id": "inside"},
+            {"trip_id": "elsewhere", "stop_id": "outside-4"},
+        ]
+        kept = transit_pipeline.area_trip_updates(rows, {"on-map"}, {"inside"})
+        self.assertEqual([row["trip_id"] for row in kept], ["on-map", "on-map", "approaching", "approaching"])
+        self.assertEqual(transit_pipeline.area_trip_updates(rows, set(), set()), rows)
+
+    def test_rail_download_leaves_unchanged_files_untouched(self):
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            for name in train_static.REQUIRED_FILES:
+                archive.writestr(name, f"{name} v1\n")
+        content = buffer.getvalue()
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def raise_for_status(self):
+                pass
+
+            def iter_content(self, _size):
+                yield content
+
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1] / "data") as directory:
+            destination = Path(directory) / "rail"
+            with patch.object(train_static.requests, "get", return_value=Response()):
+                self.assertEqual(sorted(train_static.download_static(destination, "url", "Rail", "key")),
+                                 sorted(train_static.REQUIRED_FILES))
+                before = (destination / "trips.txt").stat().st_mtime_ns
+                self.assertEqual(train_static.download_static(destination, "url", "Rail", "key"), [])
+            self.assertEqual((destination / "trips.txt").stat().st_mtime_ns, before)
+            self.assertIsNotNone(train_static.last_checked(destination))
+
+    def test_vehicle_api_answers_unchanged_snapshot_with_304(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1] / "data") as directory:
+            root = Path(directory)
+            now = int(datetime.now(ZoneInfo("Australia/Sydney")).timestamp())
+            snapshot_file = root / "vehicles.csv"
+            pd.DataFrame([{"mode": "bus", "feed": "buses", "vehicle_id": "B1", "trip_id": "t",
+                           "route_short_name": "42", "latitude": -33.87, "longitude": 151.20,
+                           "timestamp": now, "valid": True,
+                           "snapshot_time": datetime.fromtimestamp(now).astimezone().isoformat()}]
+                         ).to_csv(snapshot_file, index=False)
+            with patch.object(visualization, "stop_lookup", return_value={}), \
+                 patch.object(visualization, "FEED_STATUS_FILE", root / "missing.json"):
+                server = visualization.ThreadingHTTPServer(("127.0.0.1", 0),
+                                                           visualization.make_handler(snapshot_file))
+                threading.Thread(target=server.serve_forever, daemon=True).start()
+                try:
+                    url = f"http://127.0.0.1:{server.server_address[1]}/api/vehicles"
+                    with urllib.request.urlopen(url) as response:
+                        etag = response.headers["ETag"]
+                        self.assertIn(b'"B1"', response.read())
+                    request = urllib.request.Request(url, headers={"If-None-Match": etag})
+                    with self.assertRaises(urllib.error.HTTPError) as raised:
+                        urllib.request.urlopen(request)
+                    self.assertEqual(raised.exception.code, 304)
+                finally:
+                    server.shutdown()
+                    server.server_close()
 
 
 if __name__ == "__main__":

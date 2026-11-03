@@ -1,9 +1,10 @@
+import threading
 import time
 from datetime import datetime
 
 from transit_pipeline import build_snapshot, fetch_all
 from train_static import (METRO_STATIC, TRAIN_STATIC, download_metro_static,
-                          download_train_static)
+                          download_train_static, last_checked)
 
 
 # Vehicle Positions are small and move the map; Trip Updates are large (about
@@ -11,6 +12,36 @@ from train_static import (METRO_STATIC, TRAIN_STATIC, download_metro_static,
 # often. 15 s / 60 s uses about 43,000 TfNSW requests a day across the 6 feeds.
 POSITIONS_INTERVAL_SECONDS = 15
 UPDATES_INTERVAL_SECONDS = 60
+STATIC_REFRESH_SECONDS = 24 * 3600
+STATIC_RETRY_SECONDS = 60 * 60
+
+_static_attempts: dict[str, float] = {}
+_static_thread: threading.Thread | None = None
+
+
+def _refresh_rail_static() -> None:
+    for label, root, download in (("Sydney Trains", TRAIN_STATIC, download_train_static),
+                                  ("Metro", METRO_STATIC, download_metro_static)):
+        checked = last_checked(root)
+        if checked is not None and time.time() - checked <= STATIC_REFRESH_SECONDS:
+            continue
+        if time.time() - _static_attempts.get(label, 0) < STATIC_RETRY_SECONDS:
+            continue
+        _static_attempts[label] = time.time()
+        try:
+            print(f"Refreshing {label} static GTFS in the background...")
+            changed = download()
+            print(f"{label} static GTFS " + (f"updated: {', '.join(changed)}" if changed else "unchanged"))
+        except Exception as error:
+            print(f"{label} static GTFS unavailable:", error)
+
+
+def start_static_refresh() -> None:
+    """Large rail downloads can take minutes, so they must not hold up vehicle positions."""
+    global _static_thread
+    if _static_thread is None or not _static_thread.is_alive():
+        _static_thread = threading.Thread(target=_refresh_rail_static, daemon=True)
+        _static_thread.start()
 
 
 def run_pipeline_cycle(include_updates: bool = True, updates_received_at: int | None = None):
@@ -21,15 +52,7 @@ def run_pipeline_cycle(include_updates: bool = True, updates_received_at: int | 
           "(positions + trip updates)" if include_updates else "(positions only)")
     print("============================================")
 
-    for label, root, download in (("Sydney Trains", TRAIN_STATIC, download_train_static),
-                                  ("Metro", METRO_STATIC, download_metro_static)):
-        trips = root / "trips.txt"
-        if not trips.exists() or time.time() - trips.stat().st_mtime > 24 * 3600:
-            try:
-                print(f"Refreshing {label} static GTFS...")
-                download()
-            except Exception as error:
-                print(f"{label} static GTFS unavailable:", error)
+    start_static_refresh()
 
     print("\n[1/2] Fetching Vehicle Positions" + (" and Trip Updates..." if include_updates else "..."))
     fetch_all(include_updates=include_updates)

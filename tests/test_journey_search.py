@@ -5,7 +5,7 @@ import sys
 import tempfile
 import time
 import unittest
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -142,6 +142,37 @@ class JourneySearchTests(unittest.TestCase):
         self.assertEqual(trams["routes"][0]["buses"][0]["vehicle_id"], "L-1")
         self.assertEqual([(route["route"], route["mode"]) for route in metros["routes"]], [("M1", "metro")])
         self.assertEqual(metros["routes"][0]["buses"][0]["vehicle_id"], "M-1")
+
+    def test_trips_are_limited_to_services_running_that_day(self):
+        root = Path(self.directory.name) / "calendar"
+        root.mkdir()
+        for name in ("stops.txt", "routes.txt", "stop_times.txt"):
+            (root / name).write_bytes((self.static / name).read_bytes())
+        write_csv(root / "trips.txt", ["trip_id", "route_id", "trip_headsign", "service_id"], [
+            {"trip_id": "forward", "route_id": "BUS", "trip_headsign": "Charlie", "service_id": "WEEKDAY"},
+            {"trip_id": "rail", "route_id": "TRAIN", "trip_headsign": "Charlie", "service_id": "UNLISTED"},
+        ])
+        write_csv(root / "calendar.txt", ["service_id", "monday", "tuesday", "wednesday", "thursday",
+                                          "friday", "saturday", "sunday", "start_date", "end_date"], [
+            {"service_id": "WEEKDAY", "monday": 1, "tuesday": 1, "wednesday": 1, "thursday": 1,
+             "friday": 1, "saturday": 0, "sunday": 0, "start_date": "20261101", "end_date": "20261130"},
+        ])
+        write_csv(root / "calendar_dates.txt", ["service_id", "date", "exception_type"], [
+            {"service_id": "WEEKDAY", "date": "20261104", "exception_type": 2},
+            {"service_id": "WEEKDAY", "date": "20261107", "exception_type": 1},
+        ])
+        index = RouteIndex(root, Path(self.directory.name) / "calendar.sqlite")
+        index.build()
+
+        def trips(day):
+            return sorted(trip["trip_id"] for trip in index.matching_trips("A", "C", "all", day))
+
+        # "rail" has no calendar entry, so it is never filtered out.
+        self.assertEqual(trips(date(2026, 11, 3)), ["forward", "rail"])  # Tuesday
+        self.assertEqual(trips(date(2026, 11, 4)), ["rail"])  # removed by calendar_dates
+        self.assertEqual(trips(date(2026, 11, 7)), ["forward", "rail"])  # added on a Saturday
+        self.assertEqual(trips(date(2026, 11, 8)), ["rail"])  # Sunday
+        self.assertEqual(trips(None), ["forward", "rail"])
 
 
 if __name__ == "__main__":

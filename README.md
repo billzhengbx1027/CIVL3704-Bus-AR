@@ -4,7 +4,7 @@ A live map of buses, Sydney Trains, Sydney Metro and light rail around central S
 
 ## Quick start
 
-Requires Python 3.10+.
+Requires Python 3.10+. On Windows, use `py` in place of `python` if `python` opens the Microsoft Store.
 
 ```powershell
 pip install -r requirements.txt
@@ -32,13 +32,13 @@ Demo mode shows fixed vehicles for all four modes and needs no API key. Open `ht
    python src/visualization.py
    ```
 
-On its first run the pipeline downloads the dedicated Sydney Trains timetable to `data/static_train/` and the Metro timetable to `data/static_metro/`, then tries to refresh them every 24 hours. Their `trip_id`s match the realtime feeds; the rail trip IDs in the complete GTFS do not. If the download fails, run `python src/train_static.py` (or `--metro`) and check that your API key has access to [Timetables for Realtime](https://opendata.transport.nsw.gov.au/data/dataset/public-transport-timetables-realtime) and [v2](https://opendata.transport.nsw.gov.au/data/dataset/public-transport-timetables-realtime-v2).
+On its first run the pipeline downloads the dedicated Sydney Trains timetable to `data/static_train/` and the Metro timetable to `data/static_metro/`, then checks for a new version every 24 hours in the background without pausing vehicle updates. Files are only replaced when their content changes, so the route and shape indexes are not rebuilt for an identical timetable. Their `trip_id`s match the realtime feeds; the rail trip IDs in the complete GTFS do not. If the download fails, run `python src/train_static.py` (or `--metro`) and check that your API key has access to [Timetables for Realtime](https://opendata.transport.nsw.gov.au/data/dataset/public-transport-timetables-realtime) and [v2](https://opendata.transport.nsw.gov.au/data/dataset/public-transport-timetables-realtime-v2).
 
 ### Feeds and request budget
 
 The pipeline reads Vehicle Positions and Trip Updates for buses, Sydney Trains, Sydney Metro, L1 Inner West and L2/L3 CBD and South East light rail, and Parramatta Light Rail (L4 falls outside the current map area). Your TfNSW application needs access to [Vehicle Positions](https://opendata.transport.nsw.gov.au/dataset/public-transport-realtime-vehicle-positions), [Vehicle Positions v2](https://opendata.transport.nsw.gov.au/dataset/public-transport-realtime-vehicle-positions-v2), [Trip Updates](https://opendata.transport.nsw.gov.au/dataset/public-transport-realtime-trip-update) and [Trip Updates v2](https://opendata.transport.nsw.gov.au/dataset/public-transport-realtime-trip-update-v2).
 
-Vehicle positions are polled every 15 seconds and Trip Updates (larger) every 60 seconds, about 43,000 requests a day across the six feeds. The intervals are set at the top of `src/pipeline.py`; check your daily quota before shortening them. If one feed fails the others keep updating, and the failure is shown on the page and in `data/feed_status.json`.
+Vehicle positions are polled every 15 seconds and Trip Updates (larger) every 60 seconds, about 43,000 requests a day across the six feeds. The intervals are set at the top of `src/pipeline.py`; check your daily quota before shortening them. The feeds are fetched in parallel. If one feed fails the others keep updating, and the failure is shown on the page and in `data/feed_status.json`. Trip Updates are trimmed to trips that are on the map or call at a stop inside it, which removes most of the statewide bus feed.
 
 ### Outputs
 
@@ -52,7 +52,7 @@ Vehicle positions are polled every 15 seconds and Trip Updates (larger) every 60
 
 Under **Find a direct route**, pick a mode and enter an origin and destination (a suburb, landmark or nearby street such as Broadway or Town Hall), or click **Choose … on map**. Stops are searched within 250 m for buses, 350 m for light rail and 500 m for trains and Metro. The search finds routes in GTFS `stop_times.txt` that need no transfer and shows the suggested boarding and alighting stops with straight-line distances. Click a vehicle with an arrival prediction to locate it on the map.
 
-Results come from the static timetable and are not filtered by today's service day, so a listed route may not be running right now. Walking distances are straight-line, not walking routes.
+Results come from the static timetable and only include trips whose `calendar.txt` / `calendar_dates.txt` service runs today (Sydney date), but a listed route may not be running at this hour. Walking distances are straight-line, not walking routes.
 
 **Arriving soon** only lists vehicles inside the map area whose position and Trip Update are both under 120 seconds old and that are predicted to reach the boarding stop within 60 minutes. Rail and Metro Trip Updates sometimes give only a delay in seconds; the arrival time is then estimated from the dedicated timetable, and no prediction is shown if the trip or stop can't be matched. The page says so explicitly when data is stale, in demo mode, or when no prediction exists.
 
@@ -101,7 +101,6 @@ src/
   pipeline.py          Polling loop (entry point for live data)
   transit_pipeline.py  Fetches all feeds and builds the delay snapshot
   transit_modes.py     Feed and mode definitions
-  gtfs_realtime.py     GTFS-Realtime parsing helpers
   train_static.py      Downloads Sydney Trains / Metro static GTFS
   map_area.py          Reads and writes map_area.json
   map_data.py          Stops and route shapes for the map

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import threading
@@ -146,7 +147,7 @@ def load_vehicle_snapshot(data_file: Path) -> dict:
 
 
 _snapshot_lock = threading.Lock()
-_snapshot_cache: tuple[tuple, dict] | None = None
+_snapshot_cache: tuple[tuple, dict, bytes, str] | None = None
 
 
 def _file_signature(path: Path):
@@ -157,17 +158,27 @@ def _file_signature(path: Path):
         return None
 
 
-def cached_vehicle_snapshot(data_file: Path) -> dict:
-    """Rebuild the snapshot only after the pipeline writes new data (about once a minute)."""
+def _encode(payload: dict) -> bytes:
+    return json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+
+def _cached_snapshot_entry(data_file: Path) -> tuple[tuple, dict, bytes, str]:
+    """Rebuild the snapshot only after the pipeline writes new data (every 15 seconds)."""
     global _snapshot_cache
     signature = (str(data_file), _file_signature(data_file),
                  _file_signature(FEED_STATUS_FILE), map_bounds())
     with _snapshot_lock:
         if _snapshot_cache and _snapshot_cache[0] == signature:
-            return _snapshot_cache[1]
+            return _snapshot_cache
         payload = load_vehicle_snapshot(data_file)
-        _snapshot_cache = (signature, payload)
-        return payload
+        body = _encode(payload)
+        etag = '"' + hashlib.blake2b(body, digest_size=8).hexdigest() + '"'
+        _snapshot_cache = (signature, payload, body, etag)
+        return _snapshot_cache
+
+
+def cached_vehicle_snapshot(data_file: Path) -> dict:
+    return _cached_snapshot_entry(data_file)[1]
 
 
 def demo_snapshot() -> dict:
@@ -219,20 +230,19 @@ def make_handler(data_file: Path = LATEST_DATA_FILE, demo: bool = False):
     route_index = RouteIndex(PROJECT_ROOT / "data" / "static", ROUTE_INDEX_FILE)
 
     class ProjectionHandler(BaseHTTPRequestHandler):
-        def _send_bytes(self, content: bytes, content_type: str, status: int = 200):
+        def _send_bytes(self, content: bytes, content_type: str, status: int = 200,
+                        etag: str | None = None):
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(content)))
             self.send_header("Cache-Control", "no-store")
+            if etag:
+                self.send_header("ETag", etag)
             self.end_headers()
             self.wfile.write(content)
 
         def _send_json(self, payload: dict, status: int = 200):
-            self._send_bytes(
-                json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-                "application/json; charset=utf-8",
-                status,
-            )
+            self._send_bytes(_encode(payload), "application/json; charset=utf-8", status)
 
         def do_GET(self):
             path = urlparse(self.path).path
@@ -264,6 +274,19 @@ def make_handler(data_file: Path = LATEST_DATA_FILE, demo: bool = False):
                 return
             if path == "/api/map-area":
                 self._send_json(load_area())
+                return
+            if path == "/api/vehicles" and not demo:
+                try:
+                    _, _, body, etag = _cached_snapshot_entry(data_file)
+                except (FileNotFoundError, ValueError, pd.errors.ParserError) as error:
+                    self._send_json({"source": "error", "snapshot_time": None, "count": 0,
+                                     "vehicles": [], "error": str(error)}, 503)
+                    return
+                # The page polls every 5 s but data changes every 15 s; skip unchanged bodies.
+                if self.headers.get("If-None-Match") == etag:
+                    self._send_bytes(b"", "application/json; charset=utf-8", 304, etag)
+                else:
+                    self._send_bytes(body, "application/json; charset=utf-8", etag=etag)
                 return
             if path in {"/api/vehicles", "/api/buses"}:
                 try:

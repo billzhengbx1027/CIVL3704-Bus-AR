@@ -10,19 +10,24 @@ import sqlite3
 import threading
 import time
 from contextlib import closing
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from map_area import bounds as map_bounds, contains as in_map_area
 from transit_modes import MODES, mode_for_route_type
 
 
 STATIC_FILES = ("stops.txt", "routes.txt", "trips.txt", "stop_times.txt")
+CALENDAR_FILES = ("calendar.txt", "calendar_dates.txt")
+WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+SYDNEY = ZoneInfo("Australia/Sydney")
 FRESH_SECONDS = 120
 ARRIVAL_WINDOW_SECONDS = 60 * 60
 AREA_RADIUS_METRES = 250
 SEARCH_RADIUS = {"bus": 250, "train": 500, "metro": 500, "light_rail": 350, "all": 500}
-INDEX_VERSION = 5
+INDEX_VERSION = 6
+BUILD_RETRY_SECONDS = 60
 
 # Approximate local landmarks. Stop coordinates and routes still come from GTFS.
 PLACES = (
@@ -52,6 +57,8 @@ class RouteIndex:
         self.database = Path(database).resolve()
         self._lock = threading.Lock()
         self._building = False
+        self._failed_at = 0.0
+        self._services: tuple[tuple, tuple[set[str], set[str]]] | None = None
         self.error = None
 
     def _sources(self) -> list[tuple[Path, set[str]]]:
@@ -72,7 +79,8 @@ class RouteIndex:
                 {"root": str(root), "modes": sorted(modes), "files": {
                     name: [root.joinpath(name).stat().st_size,
                            root.joinpath(name).stat().st_mtime_ns]
-                    for name in STATIC_FILES
+                    if root.joinpath(name).exists() else None
+                    for name in (*STATIC_FILES, *CALENDAR_FILES)
                 }} for root, modes in self._sources()
             ],
         }, sort_keys=True)
@@ -91,6 +99,9 @@ class RouteIndex:
         if self.is_ready():
             return True
         with self._lock:
+            # A failure (e.g. a timetable caught mid-download) is retried after a pause.
+            if self.error and time.time() - self._failed_at >= BUILD_RETRY_SECONDS:
+                self.error = None
             if not self._building and self.error is None:
                 self._building = True
                 self.error = None
@@ -102,6 +113,7 @@ class RouteIndex:
             self.build()
         except (OSError, ValueError, sqlite3.Error, KeyError) as error:
             self.error = str(error)
+            self._failed_at = time.time()
         finally:
             with self._lock:
                 self._building = False
@@ -120,7 +132,11 @@ class RouteIndex:
                     CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
                     CREATE TABLE stops (id TEXT PRIMARY KEY, name TEXT, latitude REAL, longitude REAL);
                     CREATE TABLE routes (id TEXT PRIMARY KEY, short_name TEXT, long_name TEXT, mode TEXT);
-                    CREATE TABLE trips (id TEXT PRIMARY KEY, route_id TEXT, headsign TEXT);
+                    CREATE TABLE trips (id TEXT PRIMARY KEY, route_id TEXT, headsign TEXT, service_id TEXT);
+                    CREATE TABLE calendar (service_id TEXT PRIMARY KEY, days TEXT,
+                                           start_date TEXT, end_date TEXT);
+                    CREATE TABLE calendar_dates (service_id TEXT, date TEXT, exception_type TEXT,
+                                                 PRIMARY KEY (service_id, date));
                     CREATE TABLE trip_stops (
                         trip_id TEXT, stop_id TEXT, sequence INTEGER,
                         pickup_type TEXT, drop_off_type TEXT
@@ -155,8 +171,21 @@ class RouteIndex:
                         for row in csv.DictReader(source):
                             if row.get("route_id") in route_ids:
                                 trip_ids.add(row["trip_id"])
-                                db.execute("INSERT OR REPLACE INTO trips VALUES (?, ?, ?)",
-                                           (row["trip_id"], row["route_id"], row.get("trip_headsign", "")))
+                                db.execute("INSERT OR REPLACE INTO trips VALUES (?, ?, ?, ?)",
+                                           (row["trip_id"], row["route_id"], row.get("trip_headsign", ""),
+                                            row.get("service_id", "")))
+
+                    if (root / "calendar.txt").exists():
+                        with (root / "calendar.txt").open(encoding="utf-8-sig", newline="") as source:
+                            for row in csv.DictReader(source):
+                                db.execute("INSERT OR REPLACE INTO calendar VALUES (?, ?, ?, ?)",
+                                           (row["service_id"], "".join(row.get(day, "0") for day in WEEKDAYS),
+                                            row["start_date"], row["end_date"]))
+                    if (root / "calendar_dates.txt").exists():
+                        with (root / "calendar_dates.txt").open(encoding="utf-8-sig", newline="") as source:
+                            db.executemany("INSERT OR REPLACE INTO calendar_dates VALUES (?, ?, ?)",
+                                           ((row["service_id"], row["date"], row["exception_type"])
+                                            for row in csv.DictReader(source)))
 
                     batch = []
                     with (root / "stop_times.txt").open(encoding="utf-8-sig", newline="") as source:
@@ -187,6 +216,35 @@ class RouteIndex:
             os.replace(temporary, self.database)
         finally:
             temporary.unlink(missing_ok=True)
+
+    def _service_days(self, day: date) -> tuple[set[str], set[str]]:
+        """Return (services with a calendar, services running on day)."""
+        stat = self.database.stat()
+        key = (day, stat.st_size, stat.st_mtime_ns)
+        if self._services and self._services[0] == key:
+            return self._services[1]
+        text = day.strftime("%Y%m%d")
+        with closing(sqlite3.connect(self.database)) as db:
+            known = {row[0] for row in db.execute(
+                "SELECT service_id FROM calendar UNION SELECT service_id FROM calendar_dates")}
+            running = {row[0] for row in db.execute(
+                "SELECT service_id FROM calendar WHERE start_date <= ? AND end_date >= ? "
+                "AND substr(days, ?, 1) = '1'", (text, text, day.weekday() + 1))}
+            for service_id, exception in db.execute(
+                    "SELECT service_id, exception_type FROM calendar_dates WHERE date = ?", (text,)):
+                if exception == "1":
+                    running.add(service_id)
+                elif exception == "2":
+                    running.discard(service_id)
+        self._services = (key, (known, running))
+        return known, running
+
+    def _runs_on(self, day: date | None):
+        """Trips without calendar data are kept; the rest must run on day."""
+        if day is None:
+            return lambda _service_id: True
+        known, running = self._service_days(day)
+        return lambda service_id: not service_id or service_id not in known or service_id in running
 
     def find_stops(self, query: str, limit: int = 20) -> list[dict]:
         query = query.strip()
@@ -228,7 +286,7 @@ class RouteIndex:
                       key=lambda stop: (stop["distance_metres"], stop["name"]))[:limit]
 
     def matching_area_trips(self, origins: list[dict], destinations: list[dict],
-                            mode: str = "all") -> list[dict]:
+                            mode: str = "all", day: date | None = None) -> list[dict]:
         from_ids = [stop["id"] for stop in origins]
         to_ids = [stop["id"] for stop in destinations]
         from_marks = ",".join("?" for _ in from_ids)
@@ -236,7 +294,7 @@ class RouteIndex:
         with closing(sqlite3.connect(self.database)) as db:
             rows = db.execute(f"""
                 SELECT DISTINCT t.id, t.route_id, r.short_name, r.long_name, r.mode,
-                                t.headsign, a.stop_id, b.stop_id
+                                t.headsign, a.stop_id, b.stop_id, t.service_id
                 FROM trip_stops a
                 JOIN trip_stops b ON b.trip_id = a.trip_id AND b.sequence > a.sequence
                 JOIN trips t ON t.id = a.trip_id
@@ -246,15 +304,19 @@ class RouteIndex:
                   AND COALESCE(b.drop_off_type, '0') != '1'
                   AND (? = 'all' OR r.mode = ?)
             """, from_ids + to_ids + [mode, mode]).fetchall()
+        runs = self._runs_on(day)
         return [dict(trip_id=trip, route_id=route, route=short or long or route,
                      route_long_name=long, mode=trip_mode, headsign=headsign,
                      origin_id=start, destination_id=end)
-                for trip, route, short, long, trip_mode, headsign, start, end in rows]
+                for trip, route, short, long, trip_mode, headsign, start, end, service in rows
+                if runs(service)]
 
-    def matching_trips(self, origin: str, destination: str, mode: str = "all") -> list[dict]:
+    def matching_trips(self, origin: str, destination: str, mode: str = "all",
+                       day: date | None = None) -> list[dict]:
         with closing(sqlite3.connect(self.database)) as db:
             rows = db.execute("""
-                SELECT DISTINCT t.id, t.route_id, r.short_name, r.long_name, r.mode, t.headsign
+                SELECT DISTINCT t.id, t.route_id, r.short_name, r.long_name, r.mode, t.headsign,
+                                t.service_id
                 FROM trip_stops a
                 JOIN trip_stops b ON b.trip_id = a.trip_id AND b.sequence > a.sequence
                 JOIN trips t ON t.id = a.trip_id
@@ -264,9 +326,11 @@ class RouteIndex:
                   AND COALESCE(b.drop_off_type, '0') != '1'
                   AND (? = 'all' OR r.mode = ?)
             """, (origin, destination, mode, mode)).fetchall()
+        runs = self._runs_on(day)
         return [dict(trip_id=trip, route_id=route, route=short or long or route,
                      route_long_name=long, mode=trip_mode, headsign=headsign)
-                for trip, route, short, long, trip_mode, headsign in rows]
+                for trip, route, short, long, trip_mode, headsign, service in rows
+                if runs(service)]
 
 
 def _like(value: str) -> str:
@@ -418,6 +482,10 @@ def _fresh(timestamp, now: float) -> bool:
     return value is not None and 0 <= now - value <= FRESH_SECONDS
 
 
+def service_day(now: float | None = None) -> date:
+    return datetime.fromtimestamp(time.time() if now is None else now, SYDNEY).date()
+
+
 def search_journey(index: RouteIndex, origin: str, destination: str,
                    snapshot: dict, updates_file: Path, *, mode: str = "all",
                    now: float | None = None) -> dict:
@@ -429,7 +497,8 @@ def search_journey(index: RouteIndex, origin: str, destination: str,
     end = index.get_stop(destination)
     if not start or not end:
         raise ValueError("Choose stops in the Central Sydney map area")
-    trips = index.matching_trips(origin, destination, mode)
+    day = service_day(now)
+    trips = index.matching_trips(origin, destination, mode, day)
     arrivals = [] if snapshot.get("source") == "demo" else upcoming_arrivals(
         trips, snapshot.get("vehicles", snapshot.get("buses", [])), updates_file, snapshot.get("snapshot_time"),
         origin, now=now)
@@ -451,6 +520,7 @@ def search_journey(index: RouteIndex, origin: str, destination: str,
         not bool(route["buses"]), route["route"], route["headsign"]))
     return {
         "origin": start, "destination": end, "routes": routes,
+        "service_date": day.isoformat(),
         "source": snapshot.get("source"),
         "snapshot_time": snapshot.get("snapshot_time"),
         "arrival_window_minutes": ARRIVAL_WINDOW_SECONDS // 60,
@@ -478,7 +548,9 @@ def search_area_journey(index: RouteIndex, origin: str, destination: str,
     to_by_id = {stop["id"]: stop for stop in to_stops}
     grouped = {}
     candidates = {}
-    for trip in index.matching_area_trips(from_stops, to_stops, mode):
+    now = time.time() if now is None else now
+    day = service_day(now)
+    for trip in index.matching_area_trips(from_stops, to_stops, mode, day):
         boarding = from_by_id[trip["origin_id"]]
         alighting = to_by_id[trip["destination_id"]]
         if (boarding["distance_metres"] > SEARCH_RADIUS[trip["mode"]]
@@ -508,7 +580,6 @@ def search_area_journey(index: RouteIndex, origin: str, destination: str,
                                              boarding=boarding, alighting=alighting,
                                              score=score)
 
-    now = time.time() if now is None else now
     try:
         snapshot_age = now - datetime.fromisoformat(snapshot.get("snapshot_time")).timestamp()
     except (TypeError, ValueError):
@@ -555,7 +626,7 @@ def search_area_journey(index: RouteIndex, origin: str, destination: str,
         "origin": start, "destination": end,
         "radius_metres": radius,
         "origin_stop_count": len(from_stops), "destination_stop_count": len(to_stops),
-        "routes": routes, "source": snapshot.get("source"),
+        "routes": routes, "service_date": day.isoformat(), "source": snapshot.get("source"),
         "snapshot_time": snapshot.get("snapshot_time"),
         "arrival_window_minutes": ARRIVAL_WINDOW_SECONDS // 60,
     }

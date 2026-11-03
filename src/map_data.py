@@ -71,6 +71,11 @@ def _trip_shape_lookup(_version: tuple) -> dict[str, tuple[str, Path]]:
     return result
 
 
+def _shape_header(source) -> list[str]:
+    """Read the header from an open binary shapes file; GTFS does not fix column order."""
+    return next(csv.reader([source.readline().decode("utf-8-sig")]))
+
+
 def _shape_index(shapes_file: Path, index_file: Path) -> dict[str, list[list[int]]]:
     """Index byte ranges once, without loading the nearly 1 GB shapes file."""
     if not shapes_file.exists():
@@ -92,7 +97,7 @@ def _shape_index(shapes_file: Path, index_file: Path) -> dict[str, list[list[int
 
         shapes: dict[str, list[list[int]]] = {}
         with shapes_file.open("rb") as source:
-            source.readline()  # header
+            column = _shape_header(source).index("shape_id")
             previous_id = None
             start = source.tell()
             while True:
@@ -102,7 +107,9 @@ def _shape_index(shapes_file: Path, index_file: Path) -> dict[str, list[list[int
                     if previous_id is not None:
                         shapes.setdefault(previous_id, []).append([start, offset])
                     break
-                shape_id = line.partition(b",")[0].strip(b'"').decode("utf-8")
+                parts = line.split(b",")
+                shape_id = (parts[column].strip().strip(b'"').decode("utf-8")
+                            if len(parts) > column else previous_id)
                 if shape_id != previous_id:
                     if previous_id is not None:
                         shapes.setdefault(previous_id, []).append([start, offset])
@@ -137,12 +144,15 @@ def route_shape_for_trip(trip_id: str) -> dict | None:
 
     points = []
     with shapes_file.open("rb") as source:
+        header = _shape_header(source)
+        lat, lon, sequence = (header.index(name) for name in
+                              ("shape_pt_lat", "shape_pt_lon", "shape_pt_sequence"))
         for start, end in spans:
             source.seek(start)
             rows = csv.reader(source.read(end - start).decode("utf-8").splitlines())
             for row in rows:
                 try:
-                    points.append((int(row[3]), float(row[1]), float(row[2])))
+                    points.append((int(row[sequence]), float(row[lat]), float(row[lon])))
                 except (IndexError, TypeError, ValueError):
                     continue
     points.sort(key=lambda point: point[0])

@@ -5,10 +5,12 @@ from __future__ import annotations
 import csv
 import json
 import os
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, time as clock_time, timedelta
 from pathlib import Path
-from time import sleep as _sleep
+from time import monotonic as _monotonic, sleep as _sleep
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -18,6 +20,7 @@ from google.transit import gtfs_realtime_pb2
 from google.protobuf.message import DecodeError
 
 from map_area import bounds as map_bounds
+from map_data import stop_lookup
 from transit_modes import FEEDS, POSITION_DISPLAY_SECONDS, mode_for_route_type
 from train_static import METRO_STATIC, TRAIN_STATIC
 
@@ -68,8 +71,34 @@ def _write_csv(path: Path, columns: tuple[str, ...], records: list[dict]) -> Non
     _replace(temporary, path)
 
 
+# Feeds are fetched in parallel; each worker thread keeps its own keep-alive session.
+# TfNSW answers 429 above about 5 requests a second per key, so request starts are spaced.
+REQUEST_SPACING_SECONDS = 0.25
+_executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="feed")
+_thread_state = threading.local()
+_rate_lock = threading.Lock()
+_next_request_at = 0.0
+
+
+def _session() -> requests.Session:
+    if not hasattr(_thread_state, "session"):
+        _thread_state.session = requests.Session()
+    return _thread_state.session
+
+
+def _wait_for_request_slot() -> None:
+    global _next_request_at
+    with _rate_lock:
+        now = _monotonic()
+        start = max(now, _next_request_at)
+        _next_request_at = start + REQUEST_SPACING_SECONDS
+    if start > now:
+        _sleep(start - now)
+
+
 def _feed(url: str, api_key: str) -> gtfs_realtime_pb2.FeedMessage:
-    response = requests.get(url, headers={"Authorization": f"apikey {api_key}"}, timeout=30)
+    _wait_for_request_slot()
+    response = _session().get(url, headers={"Authorization": f"apikey {api_key}"}, timeout=30)
     response.raise_for_status()
     feed = gtfs_realtime_pb2.FeedMessage()
     feed.ParseFromString(response.content)
@@ -171,11 +200,81 @@ def _cached_positions(now: int, feed_name: str) -> list[dict]:
     return records
 
 
+_area_stops_cache: tuple[tuple, set[str]] | None = None
+
+
+def _area_stop_ids() -> set[str]:
+    """Static stop IDs inside the map area, rebuilt when the area or stops change."""
+    global _area_stops_cache
+    stops = stop_lookup()
+    key = (id(stops), map_bounds())
+    if _area_stops_cache and _area_stops_cache[0] == key:
+        return _area_stops_cache[1]
+    lat_min, lat_max, lon_min, lon_max = key[1]
+    ids = {stop_id for stop_id, stop in stops.items()
+           if lat_min <= stop["latitude"] <= lat_max and lon_min <= stop["longitude"] <= lon_max}
+    _area_stops_cache = (key, ids)
+    return ids
+
+
+def area_trip_updates(records: list[dict], active_trip_ids: set[str], area_stops: set[str]) -> list[dict]:
+    """Keep every stop of trips that are on the map now or call at a stop inside it.
+
+    The bus feed covers all of NSW (about 120,000 stop rows); only a small share
+    is ever shown, so trimming it keeps every later read of the file cheap.
+    """
+    if not area_stops:
+        return records  # No static stops to judge by; keep everything.
+    keep = {row["trip_id"] for row in records
+            if row["trip_id"] in active_trip_ids or row["stop_id"] in area_stops}
+    return [row for row in records if row["trip_id"] in keep]
+
+
 def _previous_status() -> dict:
     try:
         return json.loads(FEED_STATUS_FILE.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
+
+
+def _fetch_source(source, api_key: str, include_updates: bool, previous: dict,
+                  area_stops: set[str]) -> tuple[dict, list[dict], list[dict]]:
+    """Fetch one feed's positions (and updates); failures stay inside this feed."""
+    positions, updates = [], []
+    state = {"mode": source.mode, "positions": "unavailable", "updates": "unavailable"}
+    if not include_updates:
+        for key in ("updates", "updates_count"):
+            if key in previous.get(source.name, {}):
+                state[key] = previous[source.name][key]
+    kinds = [("positions", source.vehicle_url)]
+    if include_updates:
+        kinds.append(("updates", source.updates_url))
+    for kind, url in kinds:
+        try:
+            feed = _feed(url, api_key)
+            received_at = int(time.time())
+            if kind == "positions":
+                records = parse_positions(feed, source.mode, source.name, received_at)
+                if not any(_position_in_grace(row, received_at) for row in records):
+                    cached = _cached_positions(received_at, source.name)
+                    state["positions_cached_count"] = len(cached)
+                    if cached:
+                        records = cached
+                positions = records
+            else:
+                active_trips = {row["trip_id"] for row in positions if row.get("trip_id")}
+                records = area_trip_updates(parse_updates(feed, source.mode, source.name),
+                                            active_trips, area_stops)
+                updates = records
+            state[kind] = "ok"
+            state[kind + "_count"] = len(records)
+        except (requests.RequestException, DecodeError, ValueError) as error:
+            state[kind] = f"{type(error).__name__}: {error}"
+            print(f"{source.name} {kind}: {state[kind]}")
+            if kind == "positions":
+                positions = _cached_positions(int(time.time()), source.name)
+                state["positions_cached_count"] = len(positions)
+    return state, positions, updates
 
 
 def fetch_all(api_key: str | None = None, *, include_updates: bool = True) -> dict:
@@ -192,38 +291,14 @@ def fetch_all(api_key: str | None = None, *, include_updates: bool = True) -> di
     if not include_updates and not UPDATES_FILE.exists():
         include_updates = True
     previous = {} if include_updates else _previous_status()
+    area_stops = _area_stop_ids() if include_updates else set()
+    results = list(_executor.map(
+        lambda source: _fetch_source(source, api_key, include_updates, previous, area_stops), FEEDS))
     positions, updates, status = [], [], {}
-    for source in FEEDS:
-        state = {"mode": source.mode, "positions": "unavailable", "updates": "unavailable"}
-        if not include_updates:
-            for key in ("updates", "updates_count"):
-                if key in previous.get(source.name, {}):
-                    state[key] = previous[source.name][key]
-        kinds = [("positions", source.vehicle_url, parse_positions, positions)]
-        if include_updates:
-            kinds.append(("updates", source.updates_url, parse_updates, updates))
-        for kind, url, parser, target in kinds:
-            try:
-                feed = _feed(url, api_key)
-                received_at = int(time.time())
-                records = (parser(feed, source.mode, source.name, received_at)
-                           if kind == "positions" else parser(feed, source.mode, source.name))
-                state[kind] = "ok"
-                state[kind + "_count"] = len(records)
-                if kind == "positions" and not any(_position_in_grace(row, received_at) for row in records):
-                    cached = _cached_positions(received_at, source.name)
-                    state["positions_cached_count"] = len(cached)
-                    if cached:
-                        records = cached
-                target.extend(records)
-            except (requests.RequestException, DecodeError, ValueError) as error:
-                state[kind] = f"{type(error).__name__}: {error}"
-                print(f"{source.name} {kind}: {state[kind]}")
-                if kind == "positions":
-                    cached = _cached_positions(int(time.time()), source.name)
-                    target.extend(cached)
-                    state["positions_cached_count"] = len(cached)
+    for source, (state, feed_positions, feed_updates) in zip(FEEDS, results):
         status[source.name] = state
+        positions.extend(feed_positions)
+        updates.extend(feed_updates)
     if not any(state["positions"] == "ok" for state in status.values()):
         raise RuntimeError("All Vehicle Positions feeds failed; previous snapshot was kept")
     _write_csv(POSITIONS_FILE, POSITION_COLUMNS, positions)
@@ -341,6 +416,7 @@ def _fill_rail_predictions(updates: pd.DataFrame, vehicles: pd.DataFrame,
 
 
 _trip_routes_cache: tuple[tuple, pd.DataFrame] | None = None
+_enriched_text: str | None = None
 
 
 def _trip_routes() -> pd.DataFrame:
@@ -390,9 +466,14 @@ def build_snapshot(*, now: int | None = None, updates_received_at: int | None = 
         updates[column] = pd.to_numeric(updates[column], errors="coerce")
     for mode, root in (("train", TRAIN_STATIC), ("metro", METRO_STATIC)):
         _fill_rail_predictions(updates, vehicles, now, mode, root)
-    temporary_updates = ENRICHED_UPDATES_FILE.with_suffix(".tmp")
-    updates.to_csv(temporary_updates, index=False)
-    _replace(temporary_updates, ENRICHED_UPDATES_FILE)
+    # Rewrite only when predictions change, so the web server keeps its parsed copy.
+    global _enriched_text
+    enriched = updates.to_csv(index=False)
+    if enriched != _enriched_text or not ENRICHED_UPDATES_FILE.exists():
+        temporary_updates = ENRICHED_UPDATES_FILE.with_suffix(".tmp")
+        temporary_updates.write_text(enriched, encoding="utf-8", newline="")
+        _replace(temporary_updates, ENRICHED_UPDATES_FILE)
+        _enriched_text = enriched
     updates["predicted_event_time"] = updates["departure_time"].fillna(updates["arrival_time"])
     upcoming = updates[
         updates["trip_id"].ne("")
