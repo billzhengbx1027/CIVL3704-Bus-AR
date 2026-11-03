@@ -227,6 +227,35 @@ body.map-picking #map { cursor: crosshair; }
 }
 
 body.projection-mode .panel { display: none; }
+/* Black outside the warped map, so the projector leaves the table around the model dark. */
+body.projection-mode { background: #000; }
+.corner-overlay { position: fixed; inset: 0; z-index: 1050; pointer-events: none; }
+.corner-overlay[hidden] { display: none; }
+.corner-overlay svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.corner-overlay polygon { fill: none; stroke: #ffd60a; stroke-width: 2; stroke-dasharray: 8 6; }
+.corner-handle {
+  --handle: #ffd60a;
+  position: absolute; width: 36px; height: 36px; margin: -18px 0 0 -18px;
+  border: 2px solid var(--handle); border-radius: 50%; background: rgba(255, 214, 10, .15);
+  pointer-events: auto; cursor: grab; touch-action: none;
+}
+.corner-handle:active { cursor: grabbing; }
+.corner-handle.selected { --handle: #ff3b30; background: rgba(255, 59, 48, .18); }
+/* Crosshair: its centre is the exact corner point. */
+.corner-handle::before, .corner-handle::after { content: ""; position: absolute; background: var(--handle); }
+.corner-handle::before { left: 50%; top: -12px; bottom: -12px; width: 2px; margin-left: -1px; }
+.corner-handle::after { top: 50%; left: -12px; right: -12px; height: 2px; margin-top: -1px; }
+.corner-label {
+  position: absolute; padding: 4px 8px; border-radius: 6px; white-space: nowrap;
+  color: #fff; background: rgba(20, 30, 36, .88); font-size: 12px; font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.corner-handle.selected .corner-label { background: #c62820; }
+/* Labels sit inside the map area so they stay on screen at the edges. */
+.corner-handle--nw .corner-label { left: 30px; top: 30px; }
+.corner-handle--ne .corner-label { right: 30px; top: 30px; }
+.corner-handle--se .corner-label { right: 30px; bottom: 30px; }
+.corner-handle--sw .corner-label { left: 30px; bottom: 30px; }
 .calibration-hint {
   position: fixed; z-index: 1100; left: 50%; top: 16px; transform: translateX(-50%);
   max-width: min(760px, calc(100vw - 32px)); padding: 10px 16px; border-radius: 10px;

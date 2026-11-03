@@ -21,6 +21,7 @@ from google.transit import gtfs_realtime_pb2
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import train_static
 import transit_pipeline
+import map_area
 import visualization
 from transit_modes import Feed, mode_for_route_type
 
@@ -290,6 +291,21 @@ class TransitPipelineTests(unittest.TestCase):
         finally:
             server.shutdown()
             server.server_close()
+
+    def test_projection_corners_save_load_and_reset(self):
+        corners = {"nw": [0.1, 0.2], "ne": [0.9, 0.1], "se": [0.95, 0.9], "sw": [0.05, 0.85]}
+        with tempfile.TemporaryDirectory() as directory:
+            corners_file = Path(directory) / "projection_corners.json"
+            self.assertIsNone(map_area.load_corners(corners_file))
+            self.assertEqual(map_area.save_corners(corners, corners_file), corners)
+            self.assertEqual(map_area.load_corners(corners_file), corners)
+            with self.assertRaises(ValueError):
+                map_area.save_corners({**corners, "se": [5, 0.9]}, corners_file)
+            with self.assertRaises(KeyError):
+                map_area.save_corners({"nw": [0.1, 0.2]}, corners_file)
+            self.assertEqual(map_area.load_corners(corners_file), corners)
+            self.assertIsNone(map_area.save_corners(None, corners_file))
+            self.assertFalse(corners_file.exists())
 
 
 if __name__ == "__main__":

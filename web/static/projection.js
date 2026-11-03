@@ -57,7 +57,7 @@ L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
     document.body.classList.add("no-basemap");
     calibrationHint.textContent = "Basemap tiles could not load (offline?). Showing vehicles on a plain background; press B to toggle.";
     calibrationHint.hidden = false;
-    setTimeout(() => { if (!calibrating) calibrationHint.hidden = true; }, 6000);
+    setTimeout(() => { if (!calibrating && !cornerCalibrating) calibrationHint.hidden = true; }, 6000);
   })
   .addTo(map);
 
@@ -857,6 +857,7 @@ function setMapInteraction(enabled) {
 // In projection mode the view is locked to map_area.json so it lines up with the physical model.
 function setProjectionMode(enabled) {
   if (!enabled && calibrating) setCalibrating(false);
+  if (!enabled && cornerCalibrating) setCornerCalibrating(false);
   projectionMode = enabled;
   document.body.classList.toggle("projection-mode", enabled);
   map.options.zoomSnap = enabled ? 0 : 0.25;
@@ -867,9 +868,11 @@ function setProjectionMode(enabled) {
       setPanelPosition(bounds.left, bounds.top);
     });
   }
+  applyCornerWarp();
   setTimeout(() => {
     map.invalidateSize();
     fitMapArea();
+    applyCornerWarp();
   }, 100);
 }
 
@@ -880,13 +883,14 @@ function setCalibrating(enabled, message = "") {
   map.keyboard.disable();  // calibrationKey handles the arrow and zoom keys itself
   // Fine scroll steps so the projection can be matched to the model edge.
   map.options.wheelPxPerZoomLevel = enabled ? 600 : 60;
+  applyCornerWarp();  // pan and zoom calibration works on the unwarped map
   if (calibrationOutline) map.removeLayer(calibrationOutline);
   calibrationOutline = enabled
     ? L.rectangle(areaBounds(), { color: "#ff3b30", weight: 2, fill: false, dashArray: "6 6", interactive: false }).addTo(map)
     : null;
   calibrationHint.hidden = !enabled && !message;
   calibrationHint.textContent = message || "Calibration: drag or use arrow keys to move (Shift = faster), scroll or +/- to zoom ([ ] = finer). Enter saves the projected area, Esc cancels.";
-  if (message) setTimeout(() => { if (!calibrating) calibrationHint.hidden = true; }, 4000);
+  if (message) setTimeout(() => { if (!calibrating && !cornerCalibrating) calibrationHint.hidden = true; }, 4000);
 }
 
 async function saveCalibration() {
@@ -919,6 +923,204 @@ function calibrationKey(event) {
   event.preventDefault();
   return true;
 }
+
+// Corner calibration (K): drag the map area's four corners onto the model's corners as the
+// projector shows them, and the whole map is warped (a homography) to fit. This corrects
+// keystone and rotation, which pan and zoom (C) cannot.
+const CORNER_NAMES = ["nw", "ne", "se", "sw"];
+const cornerOverlay = document.getElementById("corner-overlay");
+const cornerOutline = cornerOverlay.querySelector("polygon");
+const cornerHandles = {};
+let cornerWarp = null;  // saved corners as screen fractions [x, y], or null for no warp
+let cornerDraft = null;  // corners being calibrated, in screen pixels
+let cornerCalibrating = false;
+let selectedCorner = "nw";
+let cornerDrag = null;
+
+function areaCornerLatLngs() {
+  return {
+    nw: [mapArea.north, mapArea.west], ne: [mapArea.north, mapArea.east],
+    se: [mapArea.south, mapArea.east], sw: [mapArea.south, mapArea.west]
+  };
+}
+
+// Where the map-area corners sit on the unwarped map, in pixels (#map fills the window).
+function areaCornerPoints() {
+  const latLngs = areaCornerLatLngs();
+  return Object.fromEntries(CORNER_NAMES.map(name => {
+    const point = map.latLngToContainerPoint(latLngs[name]);
+    return [name, [point.x, point.y]];
+  }));
+}
+
+function cornerPixels(fractions) {
+  return Object.fromEntries(CORNER_NAMES.map(name =>
+    [name, [fractions[name][0] * window.innerWidth, fractions[name][1] * window.innerHeight]]));
+}
+
+// Solves the 3×3 homography (bottom-right fixed at 1) taking each source corner to its target.
+function homography(source, target) {
+  const rows = [];
+  for (const name of CORNER_NAMES) {
+    const [x, y] = source[name];
+    const [u, v] = target[name];
+    rows.push([x, y, 1, 0, 0, 0, -u * x, -u * y, u]);
+    rows.push([0, 0, 0, x, y, 1, -v * x, -v * y, v]);
+  }
+  for (let column = 0; column < 8; column++) {
+    let pivot = column;
+    for (let row = column + 1; row < 8; row++) {
+      if (Math.abs(rows[row][column]) > Math.abs(rows[pivot][column])) pivot = row;
+    }
+    [rows[column], rows[pivot]] = [rows[pivot], rows[column]];
+    if (Math.abs(rows[column][column]) < 1e-12) return null;
+    for (let row = 0; row < 8; row++) {
+      if (row === column) continue;
+      const factor = rows[row][column] / rows[column][column];
+      for (let k = column; k < 9; k++) rows[row][k] -= factor * rows[column][k];
+    }
+  }
+  return rows.map((row, index) => row[8] / row[index]);
+}
+
+// A folded or collapsed quadrilateral would turn the map inside out.
+function isConvex(points) {
+  let sign = 0;
+  for (let index = 0; index < 4; index++) {
+    const [ax, ay] = points[CORNER_NAMES[index]];
+    const [bx, by] = points[CORNER_NAMES[(index + 1) % 4]];
+    const [cx, cy] = points[CORNER_NAMES[(index + 2) % 4]];
+    const cross = (bx - ax) * (cy - by) - (by - ay) * (cx - bx);
+    if (Math.abs(cross) < 1) return false;
+    if (sign && Math.sign(cross) !== sign) return false;
+    sign = Math.sign(cross);
+  }
+  return true;
+}
+
+function applyCornerWarp() {
+  const container = map.getContainer();
+  const target = cornerCalibrating ? cornerDraft
+    : projectionMode && !calibrating && cornerWarp ? cornerPixels(cornerWarp) : null;
+  const h = target && homography(areaCornerPoints(), target);
+  container.style.transformOrigin = h ? "0 0" : "";
+  container.style.transform = h
+    ? `matrix3d(${[h[0], h[3], 0, h[6], h[1], h[4], 0, h[7], 0, 0, 1, 0, h[2], h[5], 0, 1].join(",")})`
+    : "";
+  if (cornerCalibrating) drawCornerHandles();
+}
+
+function drawCornerHandles() {
+  for (const name of CORNER_NAMES) {
+    const [x, y] = cornerDraft[name];
+    cornerHandles[name].style.left = `${x}px`;
+    cornerHandles[name].style.top = `${y}px`;
+    cornerHandles[name].classList.toggle("selected", name === selectedCorner);
+  }
+  cornerOutline.setAttribute("points", CORNER_NAMES.map(name => cornerDraft[name].join(",")).join(" "));
+}
+
+function moveCorner(name, x, y) {
+  const point = [
+    Math.min(Math.max(x, 0), window.innerWidth),
+    Math.min(Math.max(y, 0), window.innerHeight)
+  ];
+  const next = { ...cornerDraft, [name]: point };
+  if (!isConvex(next)) return;
+  cornerDraft = next;
+  applyCornerWarp();
+}
+
+for (const [index, name] of CORNER_NAMES.entries()) {
+  const handle = document.createElement("div");
+  handle.className = `corner-handle corner-handle--${name}`;
+  handle.innerHTML = `<span class="corner-label"></span>`;
+  handle.addEventListener("pointerdown", event => {
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    selectedCorner = name;
+    const [x, y] = cornerDraft[name];
+    cornerDrag = { id: event.pointerId, name, dx: x - event.clientX, dy: y - event.clientY };
+    handle.setPointerCapture(event.pointerId);
+    drawCornerHandles();
+    event.preventDefault();
+  });
+  handle.addEventListener("pointermove", event => {
+    if (cornerDrag?.id !== event.pointerId) return;
+    moveCorner(cornerDrag.name, event.clientX + cornerDrag.dx, event.clientY + cornerDrag.dy);
+  });
+  const finishCornerDrag = event => { if (cornerDrag?.id === event.pointerId) cornerDrag = null; };
+  handle.addEventListener("pointerup", finishCornerDrag);
+  handle.addEventListener("pointercancel", finishCornerDrag);
+  handle.dataset.key = String(index + 1);
+  cornerHandles[name] = handle;
+  cornerOverlay.append(handle);
+}
+
+function setCornerCalibrating(enabled, message = "") {
+  cornerCalibrating = enabled;
+  cornerDrag = null;
+  document.body.classList.toggle("corner-calibrating", enabled);
+  cornerOverlay.hidden = !enabled;
+  if (enabled) {
+    cornerDraft = cornerWarp ? cornerPixels(cornerWarp) : areaCornerPoints();
+    const latLngs = areaCornerLatLngs();
+    for (const name of CORNER_NAMES) {
+      const [lat, lon] = latLngs[name];
+      cornerHandles[name].querySelector(".corner-label").textContent =
+        `${cornerHandles[name].dataset.key} · ${name.toUpperCase()} ${lat.toFixed(3)}, ${lon.toFixed(3)}`;
+    }
+  }
+  applyCornerWarp();
+  calibrationHint.hidden = !enabled && !message;
+  calibrationHint.textContent = message || "Corner calibration: drag each corner onto the model's corner. 1–4 or Tab picks a corner, arrow keys nudge it (Shift = 10 px), 0 removes the warp. Enter saves, Esc cancels.";
+  if (message) setTimeout(() => { if (!calibrating && !cornerCalibrating) calibrationHint.hidden = true; }, 4000);
+}
+
+async function saveCornerCalibration() {
+  const unwarped = areaCornerPoints();
+  const isUnwarped = CORNER_NAMES.every(name =>
+    Math.hypot(cornerDraft[name][0] - unwarped[name][0], cornerDraft[name][1] - unwarped[name][1]) < 0.5);
+  const corners = isUnwarped ? null : Object.fromEntries(CORNER_NAMES.map(name =>
+    [name, [cornerDraft[name][0] / window.innerWidth, cornerDraft[name][1] / window.innerHeight]]));
+  try {
+    const response = await fetch("/api/projection-corners", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ corners })
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "Could not save the corners");
+    cornerWarp = payload.corners;
+    setCornerCalibrating(false, cornerWarp ? "Corners saved to projection_corners.json." : "Corner warp removed.");
+  } catch (error) {
+    calibrationHint.textContent = error.message;
+  }
+}
+
+function cornerCalibrationKey(event) {
+  const step = event.shiftKey ? 10 : 1;
+  const nudges = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] };
+  if (nudges[event.key]) {
+    const [x, y] = cornerDraft[selectedCorner];
+    moveCorner(selectedCorner, x + nudges[event.key][0], y + nudges[event.key][1]);
+  } else if (["1", "2", "3", "4"].includes(event.key)) {
+    selectedCorner = CORNER_NAMES[Number(event.key) - 1];
+    drawCornerHandles();
+  } else if (event.key === "Tab") {
+    const index = CORNER_NAMES.indexOf(selectedCorner);
+    selectedCorner = CORNER_NAMES[(index + (event.shiftKey ? 3 : 1)) % 4];
+    drawCornerHandles();
+  } else if (event.key === "0") {
+    cornerDraft = areaCornerPoints();
+    applyCornerWarp();
+  } else if (event.key === "Enter") saveCornerCalibration();
+  else if (event.key === "Escape") setCornerCalibrating(false);
+  else return false;
+  event.preventDefault();
+  return true;
+}
+
+map.on("moveend zoomend resize", applyCornerWarp);
 
 function toggleLabels() {
   labelsVisible = !labelsVisible;
@@ -968,8 +1170,10 @@ document.getElementById("reset-settings").addEventListener("click", () => {
 document.addEventListener("keydown", event => {
   if (["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement?.tagName)) return;
   if (calibrating && calibrationKey(event)) return;
+  if (cornerCalibrating && cornerCalibrationKey(event)) return;
   const key = event.key.toLowerCase();
-  if (key === "c" && projectionMode && !calibrating) setCalibrating(true);
+  if (key === "c" && projectionMode && !calibrating && !cornerCalibrating) setCalibrating(true);
+  if (key === "k" && projectionMode && !calibrating && !cornerCalibrating) setCornerCalibrating(true);
   if (key === "p") setProjectionMode(!projectionMode);
   if (key === "l") toggleLabels();
   if (key === "b") document.body.classList.toggle("no-basemap");
@@ -989,5 +1193,9 @@ fetch("/api/map-area", { cache: "no-store" })
   .then(response => response.ok ? response.json() : null)
   .then(area => { if (area) { mapArea = area; fitMapArea(); } })
   .catch(() => { /* keep the built-in area */ });
+fetch("/api/projection-corners", { cache: "no-store" })
+  .then(response => response.ok ? response.json() : null)
+  .then(payload => { cornerWarp = payload?.corners || null; applyCornerWarp(); })
+  .catch(() => { /* no warp */ });
 refresh();
 setInterval(() => { if (!document.hidden) refresh(); }, REFRESH_MS);

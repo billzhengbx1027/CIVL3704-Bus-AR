@@ -52,6 +52,42 @@ def save_area(area: dict, area_file: Path = AREA_FILE) -> dict:
     return load_area(area_file)
 
 
+# Where the projector shows each map-area corner, as fractions of the screen (x, y).
+# Set with corner calibration (P, then K); the page warps the map to fit them.
+CORNERS_FILE = PROJECT_ROOT / "projection_corners.json"
+CORNER_NAMES = ("nw", "ne", "se", "sw")
+
+
+def load_corners(corners_file: Path = CORNERS_FILE) -> dict | None:
+    try:
+        return _validated_corners(json.loads(corners_file.read_text(encoding="utf-8")))
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def _validated_corners(corners: dict) -> dict:
+    cleaned = {}
+    for name in CORNER_NAMES:
+        x, y = (float(value) for value in corners[name])
+        # Allow corners a little off screen, but not runaway values.
+        if not (-1 <= x <= 2 and -1 <= y <= 2):
+            raise ValueError(f"Corner {name} is too far off screen")
+        cleaned[name] = [x, y]
+    return cleaned
+
+
+def save_corners(corners: dict | None, corners_file: Path = CORNERS_FILE) -> dict | None:
+    """Save the projected corners, or remove them (no warp) when corners is None."""
+    if corners is None:
+        corners_file.unlink(missing_ok=True)
+        return None
+    cleaned = _validated_corners(corners)
+    temporary = corners_file.with_suffix(".tmp")
+    temporary.write_text(json.dumps(cleaned, indent=2) + "\n", encoding="utf-8")
+    os.replace(temporary, corners_file)
+    return cleaned
+
+
 def bounds() -> tuple[float, float, float, float]:
     """Return (lat_min, lat_max, lon_min, lon_max)."""
     area = load_area()

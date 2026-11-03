@@ -15,7 +15,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import pandas as pd
-from map_area import bounds as map_bounds, load_area, save_area
+from map_area import bounds as map_bounds, load_area, load_corners, save_area, save_corners
 from map_data import route_shape_for_trip, stop_lookup
 from journey_search import RouteIndex, find_places, search_area_journey, search_journey
 from transit_modes import POSITION_DISPLAY_SECONDS
@@ -273,6 +273,9 @@ def make_handler(data_file: Path = LATEST_DATA_FILE, demo: bool = False):
             if path == "/api/map-area":
                 self._send_json(load_area())
                 return
+            if path == "/api/projection-corners":
+                self._send_json({"corners": load_corners()})
+                return
             if path == "/api/vehicles" and not demo:
                 try:
                     _, _, body, etag = _cached_snapshot_entry(data_file)
@@ -368,23 +371,29 @@ def make_handler(data_file: Path = LATEST_DATA_FILE, demo: bool = False):
             self._send_json({"error": "Not found"}, 404)
 
         def do_POST(self):
-            if urlparse(self.path).path != "/api/map-area":
+            path = urlparse(self.path).path
+            if path not in {"/api/map-area", "/api/projection-corners"}:
                 self._send_json({"error": "Not found"}, 404)
                 return
-            # Calibration rewrites map_area.json, so only accept it from this computer.
+            # Calibration rewrites files in the project, so only accept it from this computer.
             if self.client_address[0] not in {"127.0.0.1", "::1"}:
                 self._send_json({"error": "Map calibration is only allowed from this computer"}, 403)
                 return
             try:
                 length = min(int(self.headers.get("Content-Length", "0")), 10_000)
-                area = save_area(json.loads(self.rfile.read(length) or b"{}"))
+                body = json.loads(self.rfile.read(length) or b"{}")
+                if path == "/api/projection-corners":
+                    result = {"corners": save_corners(body["corners"])}
+                else:
+                    result = save_area(body)
             except (ValueError, KeyError, TypeError) as error:
-                self._send_json({"error": f"Invalid map area: {error}"}, 400)
+                label = "corners" if path == "/api/projection-corners" else "map area"
+                self._send_json({"error": f"Invalid {label}: {error}"}, 400)
                 return
             except OSError as error:
                 self._send_json({"error": str(error)}, 503)
                 return
-            self._send_json(area)
+            self._send_json(result)
 
         def log_message(self, format, *args):
             if args and str(args[0]).startswith(("GET /api/buses", "GET /api/vehicles")):

@@ -66,7 +66,8 @@ Results come from the static timetable and only include trips whose `calendar.tx
 | Key | Action |
 | --- | --- |
 | `P` | Toggle projection view |
-| `C` | Calibrate (in projection view) |
+| `C` | Pan/zoom calibration (in projection view) |
+| `K` | Corner calibration (in projection view) |
 | `L` | Toggle vehicle labels |
 | `B` | Switch basemap (switches off by itself if the tiles cannot load, e.g. offline) |
 | `F` | Full screen |
@@ -81,6 +82,14 @@ To project onto the physical model:
 1. Press `F` for full screen, then `P` for projection view (locked to `map_area.json`, no zoom or drag).
 2. Press `C` to calibrate. Drag or use arrow keys to move (Shift for bigger steps), scroll or `+`/`-` to zoom, `[`/`]` to fine-tune. The red dashed box is the saved area.
 3. Press `Enter` to save the current view to `map_area.json`, or `Esc` to cancel. Saving is only accepted from localhost.
+
+If the projector is tilted or off-axis, pan and zoom cannot line up all four edges. Use corner calibration instead:
+
+1. In projection view, press `K`. Handles appear on the four corners of the map area (NW −33.835, 151.145; NE −33.835, 151.265; SE −33.895, 151.265; SW −33.895, 151.145).
+2. Drag each handle until that corner of the projected map sits on the matching corner of the model. The map warps live (a perspective transform). `1`–`4` or `Tab` selects a corner, and the arrow keys nudge it by 1 px (Shift for 10 px). `0` removes the warp.
+3. Press `Enter` to save to `projection_corners.json`, or `Esc` to cancel. Corners are stored as fractions of the screen, so they carry over if the resolution changes. Save in full screen (`F`) so the handles match the projected image.
+
+Corner calibration doesn't change `map_area.json`. Do any `C` calibration first, because `C` works on the unwarped map.
 
 A running `python src/pipeline.py` picks up the new area on its next cycle (within about 15 seconds) without a restart. The route index rebuilds once on the next search, which takes a few minutes.
 

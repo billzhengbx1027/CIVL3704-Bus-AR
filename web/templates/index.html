@@ -134,13 +134,14 @@
       </div>
     </div>
     <footer class="panel-footer">
-      <p class="keys">P projection (C calibrate inside it) · L route labels · B basemap · F fullscreen · R refresh</p>
+      <p class="keys">P projection (inside it: C pan/zoom calibration, K corner calibration) · L route labels · B basemap · F fullscreen · R refresh</p>
       <button id="reset-panel-position" type="button" class="reset-panel-position">Reset panel position</button>
     </footer>
   </section>
 
   <div id="error" class="error" role="alert" hidden></div>
   <div id="calibration-hint" class="calibration-hint" role="status" aria-live="polite" hidden></div>
+  <div id="corner-overlay" class="corner-overlay" hidden><svg aria-hidden="true"><polygon></polygon></svg></div>
 
   <script src="/static/vendor/leaflet/leaflet.js"></script>
   <script src="/static/delay_rules.js"></script>
