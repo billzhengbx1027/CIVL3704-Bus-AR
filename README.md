@@ -66,6 +66,7 @@ Results come from the static timetable and only include trips whose `calendar.tx
 | Key | Action |
 | --- | --- |
 | `P` | Toggle projection view |
+| `H` | Hide or show the control panel |
 | `C` | Pan/zoom calibration (in projection view) |
 | `K` | Corner calibration (in projection view) |
 | `L` | Toggle vehicle labels |
@@ -79,7 +80,7 @@ Results come from the static timetable and only include trips whose `calendar.tx
 
 To project onto the physical model:
 
-1. Press `F` for full screen, then `P` for projection view (locked to `map_area.json`, no zoom or drag).
+1. Press `F` for full screen, then `P` for projection view (locked to `map_area.json`, no zoom or drag). The control panel stays available so you can demonstrate filters, route paths and route search on the model: drag it off the model onto the table, or press `H` to hide it. In this view, panel actions and popups never pan or zoom the map, and clicks on the map (vehicles, **Choose … on map**) still land on the right spot when the map is warped by corner calibration. The panel hides itself while you calibrate.
 2. Press `C` to calibrate. Drag or use arrow keys to move (Shift for bigger steps), scroll or `+`/`-` to zoom, `[`/`]` to fine-tune. The red dashed box is the saved area.
 3. Press `Enter` to save the current view to `map_area.json`, or `Esc` to cancel. Saving is only accepted from localhost.
 

@@ -629,7 +629,8 @@ function showJourneyStops(result) {
 function renderJourney(result, focusStops = false) {
   journeyControls.results.replaceChildren();
   showJourneyStops(result);
-  if (focusStops) {
+  // In projection mode the view stays on the calibrated area, so panel actions never move it.
+  if (focusStops && !projectionMode) {
     map.fitBounds(L.latLngBounds([
       [result.origin.latitude, result.origin.longitude],
       [result.destination.latitude, result.destination.longitude]
@@ -691,7 +692,7 @@ function renderJourney(result, focusStops = false) {
           controls.stop.value = "";
           render();
           updateRouteShape();
-          map.panTo([bus.latitude, bus.longitude]);
+          if (!projectionMode) map.panTo([bus.latitude, bus.longitude]);
           vehicleMarkers.get(`${route.mode}:${bus.vehicle_id}`)?.marker.openPopup();
         });
         arrivals.append(button);
@@ -862,12 +863,8 @@ function setProjectionMode(enabled) {
   document.body.classList.toggle("projection-mode", enabled);
   map.options.zoomSnap = enabled ? 0 : 0.25;
   setMapInteraction(!enabled);
-  if (!enabled && panel.classList.contains("panel-moved")) {
-    requestAnimationFrame(() => {
-      const bounds = panel.getBoundingClientRect();
-      setPanelPosition(bounds.left, bounds.top);
-    });
-  }
+  // Popups would otherwise pan the map to fit and break the alignment with the model.
+  L.Popup.prototype.options.autoPan = !enabled;
   applyCornerWarp();
   setTimeout(() => {
     map.invalidateSize();
@@ -936,6 +933,7 @@ let cornerDraft = null;  // corners being calibrated, in screen pixels
 let cornerCalibrating = false;
 let selectedCorner = "nw";
 let cornerDrag = null;
+let inverseWarp = null;  // screen pixels back to unwarped map pixels while warped
 
 function areaCornerLatLngs() {
   return {
@@ -1002,7 +1000,9 @@ function applyCornerWarp() {
   const container = map.getContainer();
   const target = cornerCalibrating ? cornerDraft
     : projectionMode && !calibrating && cornerWarp ? cornerPixels(cornerWarp) : null;
-  const h = target && homography(areaCornerPoints(), target);
+  const source = target && areaCornerPoints();
+  const h = target && homography(source, target);
+  inverseWarp = h ? homography(target, source) : null;
   container.style.transformOrigin = h ? "0 0" : "";
   container.style.transform = h
     ? `matrix3d(${[h[0], h[3], 0, h[6], h[1], h[4], 0, h[7], 0, 0, 1, 0, h[2], h[5], 0, 1].join(",")})`
@@ -1122,6 +1122,26 @@ function cornerCalibrationKey(event) {
 
 map.on("moveend zoomend resize", applyCornerWarp);
 
+// Leaflet places clicks (map picks, canvas markers) on the unwarped container, so map the
+// pointer back through the warp first.
+const unwarpedMouseEventToContainerPoint = map.mouseEventToContainerPoint;
+map.mouseEventToContainerPoint = function (event) {
+  if (!inverseWarp) return unwarpedMouseEventToContainerPoint.call(this, event);
+  const h = inverseWarp;
+  const x = event.clientX, y = event.clientY;
+  const w = h[6] * x + h[7] * y + 1;
+  return L.point((h[0] * x + h[1] * y + h[2]) / w, (h[3] * x + h[4] * y + h[5]) / w);
+};
+
+function togglePanel() {
+  const hidden = document.body.classList.toggle("panel-hidden");
+  if (!hidden && panel.classList.contains("panel-moved")) {
+    // The window may have changed size (e.g. full screen) while the panel was hidden.
+    const bounds = panel.getBoundingClientRect();
+    setPanelPosition(bounds.left, bounds.top);
+  }
+}
+
 function toggleLabels() {
   labelsVisible = !labelsVisible;
   updateLabels();
@@ -1151,7 +1171,7 @@ journeyControls.form.addEventListener("submit", event => {
 });
 controls.stop.addEventListener("change", () => {
   const selectedStop = knownStops.get(controls.stop.value);
-  if (selectedStop) map.panTo([selectedStop.latitude, selectedStop.longitude]);
+  if (selectedStop && !projectionMode) map.panTo([selectedStop.latitude, selectedStop.longitude]);
   render();
 });
 controls.showRoute.addEventListener("change", updateRouteShape);
@@ -1175,6 +1195,7 @@ document.addEventListener("keydown", event => {
   if (key === "c" && projectionMode && !calibrating && !cornerCalibrating) setCalibrating(true);
   if (key === "k" && projectionMode && !calibrating && !cornerCalibrating) setCornerCalibrating(true);
   if (key === "p") setProjectionMode(!projectionMode);
+  if (key === "h") togglePanel();
   if (key === "l") toggleLabels();
   if (key === "b") document.body.classList.toggle("no-basemap");
   if (key === "r") refresh();

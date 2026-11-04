@@ -226,7 +226,8 @@ body.map-picking #map { cursor: crosshair; }
   box-shadow: 0 8px 24px rgba(70, 30, 30, .2); font-weight: 600;
 }
 
-body.projection-mode .panel { display: none; }
+/* The panel stays in projection mode (drag it off the model); H hides it, calibration too. */
+body.panel-hidden .panel, body.calibrating .panel, body.corner-calibrating .panel { display: none; }
 /* Black outside the warped map, so the projector leaves the table around the model dark. */
 body.projection-mode { background: #000; }
 .corner-overlay { position: fixed; inset: 0; z-index: 1050; pointer-events: none; }
